@@ -1,16 +1,35 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { FormEvent } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
   createTransaction,
-  deleteTransaction,
   seedDefaultCategories,
   updateTransaction
 } from "../lib/api";
-import { formatCurrency, formatDate } from "../lib/format";
-import type { CategoryType, Transaction } from "../types";
+import { formatCurrency } from "../lib/format";
+import type { Category, CategoryType, Transaction } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
+
+const iconByName: Record<string, string> = {
+  "Reddito da Lavoro": "\u{1F4BC}",
+  "Extra & Side Hustle": "\u{1F6E0}",
+  "Regali & Aiuti": "\u{1F381}",
+  "Rimborsi & Tecnici": "\u{1F9FE}",
+  "Casa & Utenze": "\u{1F3E0}",
+  Alimentazione: "\u{1F37D}",
+  Trasporti: "\u{1F697}",
+  "Salute & Cura Personale": "\u{1FA7A}",
+  "Svago & Lifestyle": "\u{1F389}",
+  "Finanza & Obblighi": "\u{1F4D1}",
+  "Famiglia & Altro": "\u{1F46A}",
+  "Versamenti (Input Capitale)": "\u{1F4C8}",
+  "Rendita Generata (Flusso Positivo)": "\u{1F4B8}",
+  "Disinvestimenti (Output Capitale)": "\u{1F4C9}"
+};
+
+type CategoryWithChildren = Category & { children: Category[] };
 
 const emptyForm = {
   type: "expense" as CategoryType,
@@ -28,26 +47,56 @@ const Transactions = () => {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [categorySearch, setCategorySearch] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const currency = settings?.base_currency ?? "EUR";
 
-  const categoryMap = useMemo(
-    () => new Map(categories.map((category) => [category.id, category.name])),
-    [categories]
-  );
+  const categoryIcons = useMemo(() => {
+    const byId = new Map<string, string>();
+    const lookup = new Map(categories.map((category) => [category.id, category]));
+    categories.forEach((category) => {
+      const parent = category.parent_id ? lookup.get(category.parent_id) : null;
+      const icon =
+        iconByName[category.name] ??
+        (parent ? iconByName[parent.name] : undefined) ??
+        "\u{1F4CC}";
+      byId.set(category.id, icon);
+    });
+    return byId;
+  }, [categories]);
 
   const filteredCategories = useMemo(
     () => categories.filter((category) => category.type === form.type),
     [categories, form.type]
   );
 
-  const categoryOptions = useMemo(() => {
+  const categoryOptions = useMemo<CategoryWithChildren[]>(() => {
     const parents = filteredCategories.filter((category) => !category.parent_id);
     return parents.map((parent) => ({
       ...parent,
       children: filteredCategories.filter((child) => child.parent_id === parent.id)
     }));
   }, [filteredCategories]);
+
+  const filteredCategoryOptions = useMemo<CategoryWithChildren[]>(() => {
+    const query = categorySearch.trim().toLowerCase();
+    if (!query) return categoryOptions;
+    return categoryOptions
+      .map((parent) => {
+        const parentMatch = parent.name.toLowerCase().includes(query);
+        const children = parent.children.filter((child) =>
+          child.name.toLowerCase().includes(query)
+        );
+        if (!parentMatch && children.length === 0) return null;
+        return {
+          ...parent,
+          children: parentMatch ? parent.children : children
+        };
+      })
+      .filter((item): item is CategoryWithChildren => item !== null);
+  }, [categoryOptions, categorySearch]);
 
   const summary = useMemo(() => {
     const limit = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -74,14 +123,29 @@ const Transactions = () => {
     summary.investmentIn -
     summary.investmentOut;
 
+
   const resetForm = () => {
     setForm({ ...emptyForm, currency });
     setEditing(null);
+    if (searchParams.get("edit")) {
+      setSearchParams({});
+    }
   };
+
+  useEffect(() => {
+    setForm((prev) => ({ ...prev, category_id: "" }));
+    setCategoryOpen(false);
+    setCategorySearch("");
+  }, [form.type]);
+
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage(null);
+    if (!form.category_id) {
+      setMessage("Seleziona una categoria.");
+      return;
+    }
     const payload = {
       type: form.type,
       flow:
@@ -107,6 +171,21 @@ const Transactions = () => {
     }
   };
 
+  const selectedCategory = form.category_id
+    ? categories.find((category) => category.id === form.category_id)
+    : null;
+  const selectedLabel = selectedCategory?.name ?? "Seleziona categoria";
+  const selectedIcon = selectedCategory
+    ? categoryIcons.get(selectedCategory.id) ?? "\u{1F4CC}"
+    : "\u{1F50E}";
+
+  const pickCategory = (categoryId: string) => {
+    setForm((prev) => ({ ...prev, category_id: categoryId }));
+    setCategoryOpen(false);
+    setCategorySearch("");
+  };
+
+
   const handleSeedCategories = async () => {
     try {
       await seedDefaultCategories();
@@ -130,14 +209,13 @@ const Transactions = () => {
     });
   };
 
-  const removeItem = async (id: string) => {
-    try {
-      await deleteTransaction(id);
-      await refresh();
-    } catch (err) {
-      setMessage((err as Error).message);
-    }
-  };
+  useEffect(() => {
+    const editId = searchParams.get("edit");
+    if (!editId) return;
+    const item = transactions.find((entry) => entry.id === editId);
+    if (!item) return;
+    startEdit(item);
+  }, [searchParams, transactions]);
 
   if (loading) {
     return <div className="card">Caricamento transazioni...</div>;
@@ -177,64 +255,117 @@ const Transactions = () => {
         </div>
       </div>
 
-      <div className="grid-2 transaction-grid">
-        <div className="card transaction-panel">
-          <div className="section-header">
-            <div>
-              <h3>{editing ? "Modifica transazione" : "Nuova transazione"}</h3>
-              <p className="section-subtitle">Registrazione rapida e pulita</p>
-            </div>
-            <span className="pill">Workflow rapido</span>
+      <div className="card transaction-panel">
+        <div className="section-header">
+          <div>
+            <h3>{editing ? "Modifica transazione" : "Nuova transazione"}</h3>
+            <p className="section-subtitle">Registrazione rapida e pulita</p>
           </div>
-          <form className="form-grid transaction-form" onSubmit={handleSubmit}>
+          <span className="pill">Workflow rapido</span>
+        </div>
+        <form className="form-grid transaction-form" onSubmit={handleSubmit}>
+          <select
+            className="select"
+            value={form.type}
+            onChange={(event) =>
+              setForm({ ...form, type: event.target.value as CategoryType })
+            }
+          >
+            <option value="income">Entrata</option>
+            <option value="expense">Uscita</option>
+            <option value="investment">Investimento</option>
+          </select>
+          {form.type === "investment" ? (
             <select
               className="select"
-              value={form.type}
+              value={form.flow}
               onChange={(event) =>
-                setForm({ ...form, type: event.target.value as CategoryType })
+                setForm({ ...form, flow: event.target.value as "in" | "out" })
               }
             >
-              <option value="income">Entrata</option>
-              <option value="expense">Uscita</option>
-              <option value="investment">Investimento</option>
+              <option value="out">Output capitale</option>
+              <option value="in">Ritorno / rendita</option>
             </select>
-            {form.type === "investment" ? (
-              <select
-                className="select"
-                value={form.flow}
-                onChange={(event) =>
-                  setForm({ ...form, flow: event.target.value as "in" | "out" })
-                }
-              >
-                <option value="out">Output capitale</option>
-                <option value="in">Ritorno / rendita</option>
-              </select>
-            ) : (
-              <input className="input" value="Flusso automatico" readOnly />
-            )}
-            <select
-              className="select"
-              value={form.category_id}
-              onChange={(event) =>
-                setForm({ ...form, category_id: event.target.value })
-              }
-              required
+          ) : (
+            <span className="tag">Flusso automatico (entrata/uscita)</span>
+          )}
+          <div className="category-picker form-span">
+            <button
+              className="picker-trigger"
+              type="button"
+              onClick={() => setCategoryOpen((open) => !open)}
+              aria-expanded={categoryOpen}
             >
-              <option value="">Seleziona categoria</option>
-              {categoryOptions.map((parent) => (
-                <optgroup key={parent.id} label={parent.name}>
-                  {parent.children.length > 0 ? (
-                    parent.children.map((child) => (
-                      <option key={child.id} value={child.id}>
-                        {child.name}
-                      </option>
-                    ))
+              <span className="picker-label">
+                <span className="picker-icon">{selectedIcon}</span>
+                {selectedLabel}
+              </span>
+              <span className="picker-caret">▾</span>
+            </button>
+            {categoryOpen && (
+              <div className="picker-panel">
+                <div className="picker-search">
+                  <input
+                    className="input"
+                    placeholder="Cerca categoria"
+                    value={categorySearch}
+                    onChange={(event) => setCategorySearch(event.target.value)}
+                  />
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setCategorySearch("")}
+                  >
+                    Reset
+                  </button>
+                  <button
+                    className="button secondary small"
+                    type="button"
+                    onClick={() => setCategoryOpen(false)}
+                  >
+                    Chiudi
+                  </button>
+                </div>
+                <div className="picker-groups">
+                  {filteredCategoryOptions.length === 0 ? (
+                    <div className="empty">Nessuna categoria trovata.</div>
                   ) : (
-                    <option value={parent.id}>{parent.name}</option>
+                    filteredCategoryOptions.map((parent) => (
+                      <div className="picker-group" key={parent.id}>
+                        <button
+                          className="picker-parent"
+                          type="button"
+                          onClick={() => pickCategory(parent.id)}
+                        >
+                          <span className="picker-icon">
+                            {categoryIcons.get(parent.id) ?? "📌"}
+                          </span>
+                          {parent.name}
+                        </button>
+                        {parent.children.length > 0 && (
+                          <div className="picker-children">
+                            {parent.children.map((child) => (
+                              <button
+                                className="picker-child"
+                                type="button"
+                                key={child.id}
+                                onClick={() => pickCategory(child.id)}
+                              >
+                                <span className="picker-icon">
+                                  {categoryIcons.get(child.id) ?? "📌"}
+                                </span>
+                                {child.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))
                   )}
-                </optgroup>
-              ))}
-            </select>
+                </div>
+              </div>
+            )}
+          </div>
           {filteredCategories.length === 0 && (
             <div className="notice form-span">
               Nessuna categoria disponibile per questo tipo.
@@ -290,82 +421,17 @@ const Transactions = () => {
               </button>
             )}
           </div>
-          </form>
-          {message && <div className="notice">{message}</div>}
-          {error && <div className="error">{error}</div>}
-        </div>
-
-        <div className="card transaction-panel">
-          <div className="section-header">
-            <div>
-              <h3>Lista transazioni</h3>
-              <p className="section-subtitle">Controllo completo degli ultimi movimenti</p>
-            </div>
-            <span className="pill">{transactions.length} movimenti</span>
-          </div>
-          {transactions.length === 0 ? (
-            <div className="empty">Nessuna transazione presente.</div>
-          ) : (
-            <div className="transaction-list">
-              {transactions.map((item) => {
-                const category = categoryMap.get(item.category_id) ?? "-";
-                const isOut =
-                  item.type === "expense" ||
-                  (item.type === "investment" && item.flow === "out");
-                const amount = isOut ? -item.amount : item.amount;
-                const typeLabel =
-                  item.type === "income"
-                    ? "Entrata"
-                    : item.type === "expense"
-                      ? "Uscita"
-                      : item.flow === "in"
-                        ? "Ritorno"
-                        : "Output capitale";
-
-                return (
-                  <div className="transaction-row" key={item.id}>
-                    <div className="transaction-meta">
-                      <span className="transaction-date">{formatDate(item.date)}</span>
-                      <strong className="transaction-category">{category}</strong>
-                      <span className="transaction-note">
-                        {item.note ?? "Nessuna nota"}
-                      </span>
-                    </div>
-                    <div className="transaction-tags">
-                      <span className={`chip ${item.type}`}>{typeLabel}</span>
-                      <span
-                        className={`transaction-amount ${
-                          isOut ? "negative" : "positive"
-                        }`}
-                      >
-                        {formatCurrency(amount, item.currency)}
-                      </span>
-                    </div>
-                    <div className="transaction-actions">
-                      <button
-                        className="button ghost small"
-                        type="button"
-                        onClick={() => startEdit(item)}
-                      >
-                        Modifica
-                      </button>
-                      <button
-                        className="button ghost small"
-                        type="button"
-                        onClick={() => removeItem(item.id)}
-                      >
-                        Elimina
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        </form>
+        {message && <div className="notice">{message}</div>}
+        {error && <div className="error">{error}</div>}
       </div>
+
     </div>
   );
 };
 
 export default Transactions;
+
+
+
+

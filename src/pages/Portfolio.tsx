@@ -33,12 +33,16 @@ const Portfolio = () => {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Holding | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [pePrice, setPePrice] = useState("");
+  const [peEps, setPeEps] = useState("");
 
   const currency = settings?.base_currency ?? "EUR";
 
   const resetForm = () => {
     setForm({ ...emptyForm, currency });
     setEditing(null);
+    setPePrice("");
+    setPeEps("");
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -81,6 +85,8 @@ const Portfolio = () => {
       start_date: item.start_date,
       note: item.note ?? ""
     });
+    setPePrice("");
+    setPeEps("");
   };
 
   const removeItem = async (id: string) => {
@@ -116,6 +122,57 @@ const Portfolio = () => {
 
       <div className="card">
         <h3>{editing ? "Modifica holding" : "Nuova holding"}</h3>
+        <div className="info-panel">
+          <div className="info-item">
+            <strong>Cost Basis</strong>
+            <span>Prezzo di carico totale (capitale investito).</span>
+          </div>
+          <div className="info-item">
+            <strong>Valore attuale</strong>
+            <span>Valore di mercato oggi, usato per ROI e CAGR.</span>
+          </div>
+          <div className="info-item">
+            <strong>P/E Ratio</strong>
+            <span>Prezzo/Utili medio. Inseriscilo solo per azioni o ETF.</span>
+          </div>
+          <div className="info-item">
+            <strong>Calcolo P/E automatico</strong>
+            <div className="info-form">
+              <input
+                className="input"
+                type="number"
+                step="0.01"
+                placeholder="Prezzo per quota"
+                value={pePrice}
+                onChange={(event) => setPePrice(event.target.value)}
+              />
+              <input
+                className="input"
+                type="number"
+                step="0.01"
+                placeholder="EPS (utili per quota)"
+                value={peEps}
+                onChange={(event) => setPeEps(event.target.value)}
+              />
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => {
+                  const price = Number(pePrice);
+                  const eps = Number(peEps);
+                  if (!price || !eps) return;
+                  setForm((prev) => ({
+                    ...prev,
+                    pe_ratio: (price / eps).toFixed(2)
+                  }));
+                }}
+              >
+                Calcola P/E
+              </button>
+            </div>
+            <span>Il valore viene inserito nel campo P/E Ratio.</span>
+          </div>
+        </div>
         <form className="form-grid" onSubmit={handleSubmit}>
           <input
             className="input"

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
   buildMonthlySeries,
@@ -18,6 +19,7 @@ const Analytics = () => {
   const { categories, transactions, holdings, settings, loading, error } =
     usePortfolioData();
   const currency = settings?.base_currency ?? "EUR";
+  const [range, setRange] = useState(12);
 
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
@@ -25,7 +27,7 @@ const Analytics = () => {
   const savingsRate = calculateSavingsRate(transactions);
   const netWorth = calculateNetWorth(holdings, transactions);
 
-  const cashflowSeries = buildMonthlySeries(transactions, 12);
+  const cashflowSeries = buildMonthlySeries(transactions, range);
   const allocation = groupHoldingsByAssetClass(holdings);
   const expenseMix = groupExpensesByCategory(transactions, categories);
 
@@ -79,7 +81,7 @@ const Analytics = () => {
       <div className="grid-2">
         <div className="chart-card">
           <div>
-            <strong>Cash Flow 12 mesi</strong>
+            <strong>Cash Flow {range} mesi</strong>
             <p className="section-subtitle">Entrate vs uscite mese per mese</p>
             <div style={{ display: "flex", gap: "8px" }}>
               <span className="tag">
@@ -90,6 +92,18 @@ const Analytics = () => {
                 <span className="tag-dot" style={{ background: "#c8782b" }} />
                 Uscite
               </span>
+            </div>
+            <div className="range-toggle">
+              {[6, 12, 24].map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`chip ${range === value ? "active" : ""}`}
+                  onClick={() => setRange(value)}
+                >
+                  {value} mesi
+                </button>
+              ))}
             </div>
           </div>
           <BarChart data={cashflowSeries} />

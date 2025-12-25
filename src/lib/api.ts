@@ -67,6 +67,14 @@ export const createTransaction = async (
   handleError(error);
 };
 
+export const createTransactions = async (
+  payloads: Omit<Transaction, "id" | "created_at" | "user_id">[]
+): Promise<void> => {
+  if (payloads.length === 0) return;
+  const { error } = await supabase.from("transactions").insert(payloads);
+  handleError(error);
+};
+
 export const updateTransaction = async (
   id: string,
   payload: Partial<Transaction>
@@ -104,6 +112,14 @@ export const createHolding = async (
   payload: Omit<Holding, "id" | "created_at" | "user_id">
 ): Promise<void> => {
   const { error } = await supabase.from("holdings").insert(payload);
+  handleError(error);
+};
+
+export const createHoldings = async (
+  payloads: Omit<Holding, "id" | "created_at" | "user_id">[]
+): Promise<void> => {
+  if (payloads.length === 0) return;
+  const { error } = await supabase.from("holdings").insert(payloads);
   handleError(error);
 };
 
