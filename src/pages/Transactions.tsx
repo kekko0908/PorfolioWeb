@@ -4,11 +4,12 @@ import type { FormEvent } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
   createTransaction,
+  createTransactions,
   seedDefaultCategories,
   updateTransaction
 } from "../lib/api";
 import { formatCurrency } from "../lib/format";
-import type { Category, CategoryType, Transaction } from "../types";
+import type { Category, CategoryType, Transaction, TransactionType } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
 
@@ -16,6 +17,7 @@ const iconByName: Record<string, string> = {
   "Reddito da Lavoro": "\u{1F4BC}",
   "Extra & Side Hustle": "\u{1F6E0}",
   "Regali & Aiuti": "\u{1F381}",
+  Regali: "\u{1F381}",
   "Rimborsi & Tecnici": "\u{1F9FE}",
   "Casa & Utenze": "\u{1F3E0}",
   Alimentazione: "\u{1F37D}",
@@ -32,8 +34,11 @@ const iconByName: Record<string, string> = {
 type CategoryWithChildren = Category & { children: Category[] };
 
 const emptyForm = {
-  type: "expense" as CategoryType,
+  type: "expense" as TransactionType,
   flow: "out" as "in" | "out",
+  account_id: "",
+  transfer_from_id: "",
+  transfer_to_id: "",
   category_id: "",
   amount: "",
   currency: "EUR",
@@ -42,7 +47,7 @@ const emptyForm = {
 };
 
 const Transactions = () => {
-  const { categories, transactions, settings, refresh, loading, error } =
+  const { accounts, categories, transactions, settings, refresh, loading, error } =
     usePortfolioData();
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Transaction | null>(null);
@@ -67,8 +72,20 @@ const Transactions = () => {
     return byId;
   }, [categories]);
 
+  const transferCategoryId = useMemo(() => {
+    const match = categories.find((category) =>
+      category.name.toLowerCase().includes("giroconti")
+    );
+    return match?.id ?? "";
+  }, [categories]);
+
+  const isTransfer = form.type === "transfer";
+
   const filteredCategories = useMemo(
-    () => categories.filter((category) => category.type === form.type),
+    () =>
+      form.type === "transfer"
+        ? []
+        : categories.filter((category) => category.type === form.type),
     [categories, form.type]
   );
 
@@ -123,7 +140,6 @@ const Transactions = () => {
     summary.investmentIn -
     summary.investmentOut;
 
-
   const resetForm = () => {
     setForm({ ...emptyForm, currency });
     setEditing(null);
@@ -133,35 +149,121 @@ const Transactions = () => {
   };
 
   useEffect(() => {
+    if (accounts.length === 0) return;
+    setForm((prev) => {
+      if (prev.type === "transfer") {
+        const fromId = prev.transfer_from_id || accounts[0].id;
+        const toId = prev.transfer_to_id || accounts[1]?.id || accounts[0].id;
+        const fromAccount = accounts.find((item) => item.id === fromId) ?? accounts[0];
+        return {
+          ...prev,
+          transfer_from_id: fromId,
+          transfer_to_id: toId,
+          currency: fromAccount.currency
+        };
+      }
+      if (prev.account_id) return prev;
+      return {
+        ...prev,
+        account_id: accounts[0].id,
+        currency: accounts[0].currency
+      };
+    });
+  }, [accounts, form.account_id, form.transfer_from_id, form.transfer_to_id, form.type]);
+
+  useEffect(() => {
     setForm((prev) => ({ ...prev, category_id: "" }));
     setCategoryOpen(false);
     setCategorySearch("");
   }, [form.type]);
 
+  useEffect(() => {
+    const accountId = form.type === "transfer" ? form.transfer_from_id : form.account_id;
+    const account = accounts.find((item) => item.id === accountId);
+    if (!account) return;
+    setForm((prev) => ({ ...prev, currency: account.currency }));
+  }, [accounts, form.account_id, form.transfer_from_id, form.type]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage(null);
-    if (!form.category_id) {
-      setMessage("Seleziona una categoria.");
-      return;
+    if (form.type === "transfer") {
+      if (!form.transfer_from_id || !form.transfer_to_id) {
+        setMessage("Seleziona il conto di origine e destinazione.");
+        return;
+      }
+      if (form.transfer_from_id === form.transfer_to_id) {
+        setMessage("Seleziona due conti diversi.");
+        return;
+      }
+      if (!transferCategoryId) {
+        setMessage("Categoria giroconti non trovata. Importa le categorie base.");
+        return;
+      }
+    } else {
+      if (!form.account_id) {
+        setMessage("Seleziona un conto.");
+        return;
+      }
+      if (!form.category_id) {
+        setMessage("Seleziona una categoria.");
+        return;
+      }
     }
-    const payload = {
-      type: form.type,
-      flow:
-        form.type === "income" ? "in" : form.type === "expense" ? "out" : form.flow,
-      category_id: form.category_id,
-      amount: Number(form.amount),
-      currency: form.currency as "EUR" | "USD",
-      date: form.date,
-      note: form.note || null
-    };
+    const amountValue = Number(form.amount);
 
     try {
-      if (editing) {
-        await updateTransaction(editing.id, payload);
+      if (form.type === "transfer") {
+        const fromAccount = accounts.find((item) => item.id === form.transfer_from_id);
+        const toAccount = accounts.find((item) => item.id === form.transfer_to_id);
+        const note = form.note
+          ? `Trasferimento: ${form.note}`
+          : `Trasferimento da ${fromAccount?.name ?? "conto"} a ${
+              toAccount?.name ?? "conto"
+            }`;
+        await createTransactions([
+          {
+            type: "transfer",
+            flow: "out",
+            account_id: form.transfer_from_id,
+            category_id: transferCategoryId,
+            amount: amountValue,
+            currency: form.currency as "EUR" | "USD",
+            date: form.date,
+            note
+          },
+          {
+            type: "transfer",
+            flow: "in",
+            account_id: form.transfer_to_id,
+            category_id: transferCategoryId,
+            amount: amountValue,
+            currency: form.currency as "EUR" | "USD",
+            date: form.date,
+            note
+          }
+        ]);
       } else {
-        await createTransaction(payload);
+        const payload = {
+          type: form.type,
+          flow:
+            form.type === "income"
+              ? "in"
+              : form.type === "expense"
+                ? "out"
+                : form.flow,
+          account_id: form.account_id,
+          category_id: form.category_id,
+          amount: amountValue,
+          currency: form.currency as "EUR" | "USD",
+          date: form.date,
+          note: form.note || null
+        };
+        if (editing) {
+          await updateTransaction(editing.id, payload);
+        } else {
+          await createTransaction(payload);
+        }
       }
       await refresh();
       setMessage("Transazione salvata.");
@@ -185,7 +287,6 @@ const Transactions = () => {
     setCategorySearch("");
   };
 
-
   const handleSeedCategories = async () => {
     try {
       await seedDefaultCategories();
@@ -201,6 +302,7 @@ const Transactions = () => {
     setForm({
       type: item.type,
       flow: item.flow,
+      account_id: item.account_id,
       category_id: item.category_id,
       amount: String(item.amount),
       currency: item.currency,
@@ -268,28 +370,83 @@ const Transactions = () => {
             className="select"
             value={form.type}
             onChange={(event) =>
-              setForm({ ...form, type: event.target.value as CategoryType })
+              setForm({ ...form, type: event.target.value as TransactionType })
             }
           >
             <option value="income">Entrata</option>
             <option value="expense">Uscita</option>
             <option value="investment">Investimento</option>
+            <option value="transfer">Trasferimento</option>
           </select>
-          {form.type === "investment" ? (
-            <select
-              className="select"
-              value={form.flow}
-              onChange={(event) =>
-                setForm({ ...form, flow: event.target.value as "in" | "out" })
-              }
-            >
-              <option value="out">Output capitale</option>
-              <option value="in">Ritorno / rendita</option>
-            </select>
+          {isTransfer ? (
+            <>
+              <select
+                className="select"
+                value={form.transfer_from_id}
+                onChange={(event) =>
+                  setForm({ ...form, transfer_from_id: event.target.value })
+                }
+              >
+                <option value="">Da (conto)</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.emoji ? `${account.emoji} ` : ""}
+                    {account.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="select"
+                value={form.transfer_to_id}
+                onChange={(event) =>
+                  setForm({ ...form, transfer_to_id: event.target.value })
+                }
+              >
+                <option value="">A (conto)</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.emoji ? `${account.emoji} ` : ""}
+                    {account.name}
+                  </option>
+                ))}
+              </select>
+              <span className="tag">Trasferimento interno tra conti</span>
+            </>
           ) : (
-            <span className="tag">Flusso automatico (entrata/uscita)</span>
+            <>
+              <select
+                className="select"
+                value={form.account_id}
+                onChange={(event) =>
+                  setForm({ ...form, account_id: event.target.value })
+                }
+              >
+                <option value="">Seleziona conto</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.emoji ? `${account.emoji} ` : ""}
+                    {account.name}
+                  </option>
+                ))}
+              </select>
+              {form.type === "investment" ? (
+                <select
+                  className="select"
+                  value={form.flow}
+                  onChange={(event) =>
+                    setForm({ ...form, flow: event.target.value as "in" | "out" })
+                  }
+                >
+                  <option value="out">Output capitale</option>
+                  <option value="in">Ritorno / rendita</option>
+                </select>
+              ) : (
+                <span className="tag">Flusso automatico: entrata = IN, uscita = OUT</span>
+              )}
+            </>
           )}
-          <div className="category-picker form-span">
+          {!isTransfer && (
+            <div className="category-picker form-span">
             <button
               className="picker-trigger"
               type="button"
@@ -300,7 +457,7 @@ const Transactions = () => {
                 <span className="picker-icon">{selectedIcon}</span>
                 {selectedLabel}
               </span>
-              <span className="picker-caret">▾</span>
+              <span className="picker-caret">v</span>
             </button>
             {categoryOpen && (
               <div className="picker-panel">
@@ -338,7 +495,7 @@ const Transactions = () => {
                           onClick={() => pickCategory(parent.id)}
                         >
                           <span className="picker-icon">
-                            {categoryIcons.get(parent.id) ?? "📌"}
+                            {categoryIcons.get(parent.id) ?? "\u{1F4CC}"}
                           </span>
                           {parent.name}
                         </button>
@@ -352,7 +509,7 @@ const Transactions = () => {
                                 onClick={() => pickCategory(child.id)}
                               >
                                 <span className="picker-icon">
-                                  {categoryIcons.get(child.id) ?? "📌"}
+                                  {categoryIcons.get(child.id) ?? "\u{1F4CC}"}
                                 </span>
                                 {child.name}
                               </button>
@@ -366,7 +523,13 @@ const Transactions = () => {
               </div>
             )}
           </div>
-          {filteredCategories.length === 0 && (
+          )}
+          {isTransfer && (
+            <div className="notice form-span">
+              Categoria impostata automaticamente su giroconti.
+            </div>
+          )}
+          {!isTransfer && filteredCategories.length === 0 && (
             <div className="notice form-span">
               Nessuna categoria disponibile per questo tipo.
               <button
@@ -391,6 +554,7 @@ const Transactions = () => {
             className="select"
             value={form.currency}
             onChange={(event) => setForm({ ...form, currency: event.target.value })}
+            disabled={isTransfer || Boolean(form.account_id)}
           >
             <option value="EUR">EUR</option>
             <option value="USD">USD</option>
@@ -426,12 +590,15 @@ const Transactions = () => {
         {error && <div className="error">{error}</div>}
       </div>
 
+      {accounts.length === 0 && (
+        <div className="notice">
+          Nessun conto disponibile. Crea un conto in Impostazioni prima di
+          inserire transazioni.
+        </div>
+      )}
     </div>
   );
 };
 
 export default Transactions;
-
-
-
 

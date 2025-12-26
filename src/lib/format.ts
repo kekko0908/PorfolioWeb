@@ -7,6 +7,11 @@ export const formatCurrency = (value: number, currency: Currency) =>
     maximumFractionDigits: 2
   }).format(value);
 
+export const formatCurrencySafe = (value: number, currency: Currency) => {
+  if (!Number.isFinite(value)) return "N/D";
+  return formatCurrency(value, currency);
+};
+
 export const formatCompact = (value: number) =>
   new Intl.NumberFormat("it-IT", {
     notation: "compact",
@@ -18,6 +23,12 @@ export const formatPercent = (value: number) =>
     style: "percent",
     maximumFractionDigits: 1
   }).format(value);
+
+export const formatPercentSafe = (value: number, maxAbs = 9.99) => {
+  if (!Number.isFinite(value)) return "N/D";
+  if (Math.abs(value) > maxAbs) return "N/D";
+  return formatPercent(value);
+};
 
 export const formatRatio = (value: number) =>
   new Intl.NumberFormat("it-IT", {

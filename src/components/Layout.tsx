@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import logo from "../logo.png";
 import { useAuth } from "../contexts/AuthContext";
 
 const navItems = [
@@ -28,9 +29,8 @@ export const Layout = () => {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-mark" aria-hidden>
-            <span className="brand-ring" />
-            <span className="brand-letter">P</span>
+          <div className="brand-mark">
+            <img className="brand-logo" src={logo} alt="Portfolio Pro" />
           </div>
           <div className="brand-text">
             <strong>Portfolio Pro</strong>

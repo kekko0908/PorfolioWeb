@@ -121,6 +121,20 @@ const Categories = () => {
 
       <div className="card">
         <h3>{editing ? "Modifica categoria" : "Nuova categoria"}</h3>
+        <div className="info-panel">
+          <div className="info-item">
+            <strong>Genitore</strong>
+            <span>Assegna un genitore per creare una sottocategoria ordinata.</span>
+          </div>
+          <div className="info-item">
+            <strong>Ordine</strong>
+            <span>Numero piu basso = categoria mostrata prima.</span>
+          </div>
+          <div className="info-item">
+            <strong>Spesa fissa</strong>
+            <span>Segna le spese ricorrenti usate nel burn rate.</span>
+          </div>
+        </div>
         <form className="form-grid" onSubmit={handleSubmit}>
           <input
             className="input"
@@ -155,7 +169,7 @@ const Categories = () => {
           <input
             className="input"
             type="number"
-            placeholder="Ordine"
+            placeholder="Ordine (priorita)"
             value={form.sort_order}
             onChange={(event) => setForm({ ...form, sort_order: event.target.value })}
           />
@@ -165,7 +179,7 @@ const Categories = () => {
               checked={form.is_fixed}
               onChange={(event) => setForm({ ...form, is_fixed: event.target.checked })}
             />
-            Spesa fissa
+            Spesa fissa (ricorrente)
           </label>
           <div style={{ display: "flex", gap: "10px" }}>
             <button className="button" type="submit">

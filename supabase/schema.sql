@@ -13,12 +13,26 @@ create table if not exists public.categories (
   created_at timestamptz not null default now()
 );
 
+-- Accounts
+create table if not exists public.accounts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  name text not null,
+  type text not null check (type in ('cash', 'debit', 'credit', 'paypal', 'bank', 'other')),
+  emoji text,
+  currency text not null check (currency in ('EUR', 'USD')),
+  opening_balance numeric(14, 2) not null default 0,
+  created_at timestamptz not null default now(),
+  unique (user_id, name)
+);
+
 -- Transactions
 create table if not exists public.transactions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  account_id uuid not null references public.accounts on delete restrict,
   category_id uuid not null references public.categories on delete restrict,
-  type text not null check (type in ('income', 'expense', 'investment')),
+  type text not null check (type in ('income', 'expense', 'investment', 'transfer')),
   flow text not null check (flow in ('in', 'out')),
   amount numeric(14, 2) not null,
   currency text not null check (currency in ('EUR', 'USD')),
@@ -33,10 +47,12 @@ create table if not exists public.holdings (
   user_id uuid not null references auth.users on delete cascade default auth.uid(),
   name text not null,
   asset_class text not null,
-  cost_basis numeric(14, 2) not null,
+  emoji text,
+  quantity numeric(14, 2) not null,
+  avg_cost numeric(14, 2) not null,
+  total_cap numeric(14, 2) not null,
   current_value numeric(14, 2) not null,
   currency text not null check (currency in ('EUR', 'USD')),
-  pe_ratio numeric(10, 2),
   start_date date not null,
   note text,
   created_at timestamptz not null default now()
@@ -69,6 +85,7 @@ execute procedure public.set_updated_at();
 
 -- RLS
 alter table public.categories enable row level security;
+alter table public.accounts enable row level security;
 alter table public.transactions enable row level security;
 alter table public.holdings enable row level security;
 alter table public.settings enable row level security;
@@ -80,6 +97,15 @@ create policy "Categories insert" on public.categories
 create policy "Categories update" on public.categories
   for update using (auth.uid() = user_id);
 create policy "Categories delete" on public.categories
+  for delete using (auth.uid() = user_id);
+
+create policy "Accounts select" on public.accounts
+  for select using (auth.uid() = user_id);
+create policy "Accounts insert" on public.accounts
+  for insert with check (auth.uid() = user_id);
+create policy "Accounts update" on public.accounts
+  for update using (auth.uid() = user_id);
+create policy "Accounts delete" on public.accounts
   for delete using (auth.uid() = user_id);
 
 create policy "Transactions select" on public.transactions

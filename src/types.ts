@@ -2,7 +2,11 @@ export type Currency = "EUR" | "USD";
 
 export type CategoryType = "income" | "expense" | "investment";
 
+export type TransactionType = "income" | "expense" | "investment" | "transfer";
+
 export type FlowDirection = "in" | "out";
+
+export type AccountType = "cash" | "debit" | "credit" | "paypal" | "bank" | "other";
 
 export interface Category {
   id: string;
@@ -18,8 +22,9 @@ export interface Category {
 export interface Transaction {
   id: string;
   user_id: string;
+  account_id: string;
   category_id: string;
-  type: CategoryType;
+  type: TransactionType;
   flow: FlowDirection;
   amount: number;
   currency: Currency;
@@ -33,10 +38,12 @@ export interface Holding {
   user_id: string;
   name: string;
   asset_class: string;
-  cost_basis: number;
+  emoji: string | null;
+  quantity: number;
+  avg_cost: number;
+  total_cap: number;
   current_value: number;
   currency: Currency;
-  pe_ratio: number | null;
   start_date: string;
   note: string | null;
   created_at: string;
@@ -48,6 +55,17 @@ export interface Setting {
   base_currency: Currency;
   emergency_fund: number;
   updated_at: string;
+}
+
+export interface Account {
+  id: string;
+  user_id: string;
+  name: string;
+  type: AccountType;
+  emoji: string | null;
+  currency: Currency;
+  opening_balance: number;
+  created_at: string;
 }
 
 export interface MonthlyPoint {

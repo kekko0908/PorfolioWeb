@@ -1,4 +1,4 @@
-import type { Category, Holding, MonthlyPoint, Transaction } from "../types";
+import type { Account, Category, Holding, MonthlyPoint, Transaction } from "../types";
 
 const toNumber = (value: number | null | undefined) => (value ? value : 0);
 
@@ -6,7 +6,7 @@ export const sumHoldingsValue = (holdings: Holding[]) =>
   holdings.reduce((sum, item) => sum + toNumber(item.current_value), 0);
 
 export const sumHoldingsCost = (holdings: Holding[]) =>
-  holdings.reduce((sum, item) => sum + toNumber(item.cost_basis), 0);
+  holdings.reduce((sum, item) => sum + toNumber(item.total_cap), 0);
 
 export const calculateRoi = (holdings: Holding[]) => {
   const cost = sumHoldingsCost(holdings);
@@ -18,30 +18,22 @@ export const calculateCagr = (holdings: Holding[]) => {
   let weighted = 0;
   let totalWeight = 0;
   const now = new Date();
+  const minYears = 1 / 12;
 
   holdings.forEach((holding) => {
-    const cost = toNumber(holding.cost_basis);
+    const cost = toNumber(holding.total_cap);
     const current = toNumber(holding.current_value);
     if (cost <= 0 || current <= 0) return;
     const start = new Date(holding.start_date);
     const years = (now.getTime() - start.getTime()) / (365 * 24 * 60 * 60 * 1000);
-    if (years <= 0) return;
+    if (years < minYears) return;
     const cagr = Math.pow(current / cost, 1 / years) - 1;
     weighted += cagr * cost;
     totalWeight += cost;
   });
 
-  if (totalWeight === 0) return 0;
+  if (totalWeight === 0) return Number.NaN;
   return weighted / totalWeight;
-};
-
-export const calculatePeRatio = (holdings: Holding[]) => {
-  const valid = holdings.filter(
-    (holding) => holding.pe_ratio !== null && holding.pe_ratio !== undefined
-  );
-  if (valid.length === 0) return 0;
-  const total = valid.reduce((sum, holding) => sum + (holding.pe_ratio ?? 0), 0);
-  return total / valid.length;
 };
 
 export const calculateCashBalance = (transactions: Transaction[]) =>
@@ -165,7 +157,7 @@ export const buildPortfolioSeries = (
         (currentDate.getMonth() - startDate.getMonth());
       if (elapsedMonths < 0) return;
       const progress = Math.min(elapsedMonths / totalMonths, 1);
-      const value = holding.cost_basis + (holding.current_value - holding.cost_basis) * progress;
+      const value = holding.total_cap + (holding.current_value - holding.total_cap) * progress;
       point.value += value;
     });
   });
@@ -201,4 +193,26 @@ export const groupHoldingsByAssetClass = (holdings: Holding[]) => {
   return Array.from(totals.entries())
     .map(([label, value]) => ({ label, value }))
     .sort((a, b) => b.value - a.value);
+};
+
+export const buildAccountBalances = (
+  accounts: Account[],
+  transactions: Transaction[]
+): Array<Account & { balance: number }> => {
+  const totals = new Map<string, number>();
+  accounts.forEach((account) => {
+    totals.set(account.id, toNumber(account.opening_balance));
+  });
+
+  transactions.forEach((item) => {
+    if (!item.account_id) return;
+    const current = totals.get(item.account_id) ?? 0;
+    const delta = item.flow === "in" ? item.amount : -item.amount;
+    totals.set(item.account_id, current + delta);
+  });
+
+  return accounts.map((account) => ({
+    ...account,
+    balance: totals.get(account.id) ?? 0
+  }));
 };

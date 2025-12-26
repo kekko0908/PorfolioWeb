@@ -2,22 +2,81 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePortfolioData } from "../hooks/usePortfolioData";
-import { createHoldings, createTransactions, upsertSettings } from "../lib/api";
-import type { CategoryType } from "../types";
+import {
+  createAccount,
+  createHoldings,
+  createTransactions,
+  deleteAccount,
+  updateAccount,
+  upsertSettings
+} from "../lib/api";
+import type { Account, AccountType, CategoryType, TransactionType } from "../types";
+
+const accountTypes: { value: AccountType; label: string }[] = [
+  { value: "bank", label: "Banca" },
+  { value: "debit", label: "Carta debito" },
+  { value: "credit", label: "Carta credito" },
+  { value: "cash", label: "Cash" },
+  { value: "paypal", label: "PayPal" },
+  { value: "other", label: "Altro" }
+];
+
+const emptyAccountForm = {
+  name: "",
+  type: "bank" as AccountType,
+  emoji: "",
+  currency: "EUR",
+  opening_balance: ""
+};
+
+const accountTypeLabels: Record<string, string> = {
+  bank: "Banca",
+  debit: "Carta debito",
+  credit: "Carta credito",
+  cash: "Cash",
+  paypal: "PayPal",
+  other: "Altro"
+};
 
 const Settings = () => {
   const { session } = useAuth();
-  const { categories, transactions, holdings, settings, refresh, loading, error } =
+  const { accounts, categories, transactions, holdings, settings, refresh, loading, error } =
     usePortfolioData();
   const [baseCurrency, setBaseCurrency] = useState("EUR");
   const [emergencyFund, setEmergencyFund] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [accountForm, setAccountForm] = useState(emptyAccountForm);
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [accountMessage, setAccountMessage] = useState<string | null>(null);
+
+  const normalizeKey = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .trim();
 
   const categoryNameToId = useMemo(
-    () => new Map(categories.map((item) => [item.name.toLowerCase(), item.id])),
+    () => new Map(categories.map((item) => [normalizeKey(item.name), item.id])),
     [categories]
   );
+  const accountNameToId = useMemo(
+    () => new Map(accounts.map((item) => [normalizeKey(item.name), item.id])),
+    [accounts]
+  );
+
+  const resolveApprox = (map: Map<string, string>, raw?: string) => {
+    if (!raw) return undefined;
+    const key = normalizeKey(raw);
+    if (!key) return undefined;
+    if (map.has(key)) return map.get(key);
+    for (const [candidate, value] of map.entries()) {
+      if (candidate.includes(key) || key.includes(candidate)) {
+        return value;
+      }
+    }
+    return undefined;
+  };
 
   useEffect(() => {
     if (settings) {
@@ -25,6 +84,14 @@ const Settings = () => {
       setEmergencyFund(String(settings.emergency_fund));
     }
   }, [settings]);
+
+  useEffect(() => {
+    if (editingAccount) return;
+    setAccountForm((prev) => ({
+      ...prev,
+      currency: baseCurrency
+    }));
+  }, [baseCurrency, editingAccount]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -41,6 +108,58 @@ const Settings = () => {
       setMessage("Impostazioni aggiornate.");
     } catch (err) {
       setMessage((err as Error).message);
+    }
+  };
+
+  const resetAccountForm = () => {
+    setAccountForm({ ...emptyAccountForm, currency: baseCurrency });
+    setEditingAccount(null);
+  };
+
+  const handleAccountSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setAccountMessage(null);
+    const payload = {
+      name: accountForm.name.trim(),
+      type: accountForm.type,
+      emoji: accountForm.emoji.trim() || null,
+      currency: accountForm.currency as "EUR" | "USD",
+      opening_balance: Number(accountForm.opening_balance || 0)
+    };
+
+    try {
+      if (editingAccount) {
+        await updateAccount(editingAccount.id, payload);
+      } else {
+        await createAccount(payload);
+      }
+      await refresh();
+      setAccountMessage("Conto salvato.");
+      resetAccountForm();
+    } catch (err) {
+      setAccountMessage((err as Error).message);
+    }
+  };
+
+  const startAccountEdit = (account: Account) => {
+    setEditingAccount(account);
+    setAccountForm({
+      name: account.name,
+      type: account.type,
+      emoji: account.emoji ?? "",
+      currency: account.currency,
+      opening_balance: String(account.opening_balance ?? 0)
+    });
+  };
+
+  const removeAccount = async (id: string) => {
+    setAccountMessage(null);
+    try {
+      await deleteAccount(id);
+      await refresh();
+      setAccountMessage("Conto eliminato.");
+    } catch (err) {
+      setAccountMessage((err as Error).message);
     }
   };
 
@@ -68,6 +187,8 @@ const Settings = () => {
         "date",
         "type",
         "flow",
+        "account_id",
+        "account_name",
         "category_id",
         "category_name",
         "amount",
@@ -78,6 +199,8 @@ const Settings = () => {
         item.date,
         item.type,
         item.flow,
+        item.account_id,
+        accounts.find((account) => account.id === item.account_id)?.name ?? "",
         item.category_id,
         categories.find((category) => category.id === item.category_id)?.name ?? "",
         String(item.amount),
@@ -93,20 +216,24 @@ const Settings = () => {
       [
         "name",
         "asset_class",
-        "cost_basis",
+        "emoji",
+        "quantity",
+        "avg_cost",
+        "total_cap",
         "current_value",
         "currency",
-        "pe_ratio",
         "start_date",
         "note"
       ],
       ...holdings.map((item) => [
         item.name,
         item.asset_class,
-        String(item.cost_basis),
+        item.emoji ?? "",
+        String(item.quantity),
+        String(item.avg_cost),
+        String(item.total_cap),
         String(item.current_value),
         item.currency,
-        item.pe_ratio ? String(item.pe_ratio) : "",
         item.start_date,
         item.note ?? ""
       ])
@@ -176,6 +303,10 @@ const Settings = () => {
   const handleImportTransactions = async (file: File) => {
     setImportMessage(null);
     try {
+      if (accounts.length === 0) {
+        setImportMessage("Crea almeno un conto prima di importare transazioni.");
+        return;
+      }
       const text = await file.text();
       const rows = parseCsv(text);
       if (rows.length < 2) {
@@ -183,12 +314,19 @@ const Settings = () => {
         return;
       }
       const headers = normalizeHeaders(rows[0]);
+      const defaultAccountId = accounts[0]?.id ?? "";
       const payloads = rows.slice(1).map((cells) => {
         const record = headers.reduce<Record<string, string>>((acc, header, index) => {
           acc[header] = cells[index]?.trim() ?? "";
           return acc;
         }, {});
-        const type = (record.type as CategoryType) || "expense";
+        const amountRaw = Number(record.amount ?? 0);
+        const inferredType = Number.isFinite(amountRaw)
+          ? amountRaw < 0
+            ? "expense"
+            : "income"
+          : "expense";
+        const type = (record.type as TransactionType) || inferredType;
         const flow =
           type === "income"
             ? "in"
@@ -197,24 +335,27 @@ const Settings = () => {
               : record.flow === "in"
                 ? "in"
                 : "out";
+        const accountId =
+          record.account_id ||
+          resolveApprox(accountNameToId, record.account_name) ||
+          defaultAccountId;
         const categoryId =
-          record.category_id ||
-          (record.category_name
-            ? categoryNameToId.get(record.category_name.toLowerCase())
-            : undefined);
+          record.category_id || resolveApprox(categoryNameToId, record.category_name);
         const currency = record.currency === "USD" ? "USD" : "EUR";
         return {
           date: record.date,
           type,
           flow,
+          account_id: accountId ?? "",
           category_id: categoryId ?? "",
-          amount: Number(record.amount ?? 0),
+          amount: Math.abs(amountRaw),
           currency,
           note: record.note || null
         };
       });
       const valid = payloads.filter(
-        (item) => item.date && item.category_id && !Number.isNaN(item.amount)
+        (item) =>
+          item.date && item.account_id && item.category_id && !Number.isNaN(item.amount)
       );
       await createTransactions(valid);
       await refresh();
@@ -240,19 +381,26 @@ const Settings = () => {
           return acc;
         }, {});
         const currency = record.currency === "USD" ? "USD" : "EUR";
+        const quantity = Number(record.quantity ?? 0);
+        const avg_cost = Number(record.avg_cost ?? 0);
+        const total_cap = record.total_cap
+          ? Number(record.total_cap)
+          : quantity * avg_cost;
         return {
           name: record.name,
           asset_class: record.asset_class || "Altro",
-          cost_basis: Number(record.cost_basis ?? 0),
+          emoji: record.emoji || null,
+          quantity,
+          avg_cost,
+          total_cap,
           current_value: Number(record.current_value ?? 0),
           currency,
-          pe_ratio: record.pe_ratio ? Number(record.pe_ratio) : null,
           start_date: record.start_date,
           note: record.note || null
         };
       });
       const valid = payloads.filter(
-        (item) => item.name && item.start_date && !Number.isNaN(item.cost_basis)
+        (item) => item.name && item.start_date && !Number.isNaN(item.total_cap)
       );
       await createHoldings(valid);
       await refresh();
@@ -302,6 +450,120 @@ const Settings = () => {
       </div>
 
       <div className="card">
+        <div className="section-header">
+          <div>
+            <h3>Conti</h3>
+            <p className="section-subtitle">Carte, contanti, PayPal e altro</p>
+          </div>
+        </div>
+        <form className="form-grid" onSubmit={handleAccountSubmit}>
+          <input
+            className="input"
+            placeholder="Nome conto"
+            value={accountForm.name}
+            onChange={(event) =>
+              setAccountForm({ ...accountForm, name: event.target.value })
+            }
+            required
+          />
+          <select
+            className="select"
+            value={accountForm.type}
+            onChange={(event) =>
+              setAccountForm({ ...accountForm, type: event.target.value as AccountType })
+            }
+          >
+            {accountTypes.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <input
+            className="input"
+            placeholder="Emoji (opzionale)"
+            value={accountForm.emoji}
+            onChange={(event) =>
+              setAccountForm({ ...accountForm, emoji: event.target.value })
+            }
+          />
+          <select
+            className="select"
+            value={accountForm.currency}
+            onChange={(event) =>
+              setAccountForm({ ...accountForm, currency: event.target.value })
+            }
+          >
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+          </select>
+          <input
+            className="input"
+            type="number"
+            step="0.01"
+            placeholder="Saldo iniziale"
+            value={accountForm.opening_balance}
+            onChange={(event) =>
+              setAccountForm({ ...accountForm, opening_balance: event.target.value })
+            }
+          />
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button className="button" type="submit">
+              {editingAccount ? "Aggiorna" : "Aggiungi"}
+            </button>
+            {editingAccount && (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={resetAccountForm}
+              >
+                Annulla
+              </button>
+            )}
+          </div>
+        </form>
+        {accountMessage && <div className="notice">{accountMessage}</div>}
+
+        {accounts.length === 0 ? (
+          <div className="empty">Nessun conto creato.</div>
+        ) : (
+          <div className="account-grid" style={{ marginTop: "16px" }}>
+            {accounts.map((account) => (
+              <div className="account-card" key={account.id}>
+                <div className="account-meta">
+                  <span className="account-emoji">
+                    {account.emoji && account.emoji.trim() ? account.emoji : "O"}
+                  </span>
+                  <div>
+                    <strong>{account.name}</strong>
+                    <span className="section-subtitle">
+                      {accountTypeLabels[account.type] ?? account.type}
+                    </span>
+                  </div>
+                </div>
+                <div className="account-actions">
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => startAccountEdit(account)}
+                  >
+                    Modifica
+                  </button>
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => removeAccount(account.id)}
+                  >
+                    Elimina
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
         <h3>Import / Export dati (CSV)</h3>
         <div className="info-panel">
           <div className="info-item">
@@ -313,15 +575,15 @@ const Settings = () => {
           <div className="info-item">
             <strong>Transazioni</strong>
             <span>
-              Campi: date, type, flow, category_id o category_name, amount, currency,
-              note.
+              Campi: date, type, flow, account_id o account_name, category_id o
+              category_name, amount, currency, note.
             </span>
           </div>
           <div className="info-item">
             <strong>Holdings</strong>
             <span>
-              Campi: name, asset_class, cost_basis, current_value, currency, pe_ratio,
-              start_date, note.
+              Campi: name, asset_class, emoji, quantity, avg_cost, total_cap,
+              current_value, currency, start_date, note.
             </span>
           </div>
         </div>

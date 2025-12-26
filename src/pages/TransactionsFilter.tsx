@@ -3,17 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import { deleteTransaction } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
-import type { Category, CategoryType } from "../types";
+import type { Category, CategoryType, TransactionType } from "../types";
 
 const weekdayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 
 type CategoryWithChildren = Category & { children: Category[] };
 
 const TransactionsFilter = () => {
-  const { categories, transactions, settings, refresh, loading, error } =
+  const { accounts, categories, transactions, settings, refresh, loading, error } =
     usePortfolioData();
   const navigate = useNavigate();
-  const [filterType, setFilterType] = useState<"all" | CategoryType>("all");
+  const [filterType, setFilterType] = useState<"all" | TransactionType>("all");
   const [filterCategory, setFilterCategory] = useState("all");
   const [filterStart, setFilterStart] = useState("");
   const [filterEnd, setFilterEnd] = useState("");
@@ -29,10 +29,20 @@ const TransactionsFilter = () => {
     () => new Map(categories.map((category) => [category.id, category.name])),
     [categories]
   );
+  const accountMap = useMemo(
+    () =>
+      new Map(
+        accounts.map((account) => [
+          account.id,
+          `${account.emoji ? `${account.emoji} ` : ""}${account.name}`
+        ])
+      ),
+    [accounts]
+  );
 
   const filterCategoryOptions = useMemo<CategoryWithChildren[]>(() => {
     const candidates =
-      filterType === "all"
+      filterType === "all" || filterType === "transfer"
         ? categories
         : categories.filter((category) => category.type === filterType);
     const parents = candidates.filter((category) => !category.parent_id);
@@ -185,7 +195,7 @@ const TransactionsFilter = () => {
               type="button"
               onClick={() => shiftMonth(-1)}
             >
-              ←
+              {"<"}
             </button>
             <div className="calendar-title">
               <strong>{calendarMeta.monthLabel}</strong>
@@ -210,7 +220,7 @@ const TransactionsFilter = () => {
                 type="button"
                 onClick={() => shiftMonth(1)}
               >
-                →
+                {">"}
               </button>
             </div>
           </div>
@@ -231,10 +241,14 @@ const TransactionsFilter = () => {
                   <span className="calendar-date">{day.label}</span>
                   <div className="calendar-values">
                     <span className="calendar-income">
-                      {totals?.income ? `+${formatCurrency(totals.income, currency)}` : "—"}
+                      {totals?.income
+                        ? `+${formatCurrency(totals.income, currency)}`
+                        : "n/d"}
                     </span>
                     <span className="calendar-expense">
-                      {totals?.expense ? `-${formatCurrency(totals.expense, currency)}` : "—"}
+                      {totals?.expense
+                        ? `-${formatCurrency(totals.expense, currency)}`
+                        : "n/d"}
                     </span>
                   </div>
                 </div>
@@ -254,13 +268,14 @@ const TransactionsFilter = () => {
                 { key: "all", label: "Tutte" },
                 { key: "income", label: "Entrate" },
                 { key: "expense", label: "Uscite" },
-                { key: "investment", label: "Investimenti" }
+                { key: "investment", label: "Investimenti" },
+                { key: "transfer", label: "Trasferimenti" }
               ].map((item) => (
                 <button
                   key={item.key}
                   type="button"
                   className={`filter-chip ${filterType === item.key ? "active" : ""}`}
-                  onClick={() => setFilterType(item.key as "all" | CategoryType)}
+                  onClick={() => setFilterType(item.key as "all" | TransactionType)}
                 >
                   {item.label}
                 </button>
@@ -271,6 +286,7 @@ const TransactionsFilter = () => {
                 className="select"
                 value={filterCategory}
                 onChange={(event) => setFilterCategory(event.target.value)}
+                disabled={filterType === "transfer"}
               >
                 <option value="all">Tutte le categorie</option>
                 {filterCategoryOptions.map((parent) => (
@@ -324,18 +340,22 @@ const TransactionsFilter = () => {
             <div className="transaction-list">
               {filteredTransactions.map((item) => {
                 const category = categoryMap.get(item.category_id) ?? "-";
+                const account = accountMap.get(item.account_id) ?? "Conto";
                 const isOut =
                   item.type === "expense" ||
-                  (item.type === "investment" && item.flow === "out");
+                  (item.type === "investment" && item.flow === "out") ||
+                  (item.type === "transfer" && item.flow === "out");
                 const amount = isOut ? -item.amount : item.amount;
                 const typeLabel =
                   item.type === "income"
                     ? "Entrata"
                     : item.type === "expense"
                       ? "Uscita"
-                      : item.flow === "in"
-                        ? "Ritorno"
-                        : "Output capitale";
+                      : item.type === "investment"
+                        ? item.flow === "in"
+                          ? "Ritorno"
+                          : "Output capitale"
+                        : "Trasferimento";
 
                 return (
                   <div className="transaction-row" key={item.id}>
@@ -348,6 +368,7 @@ const TransactionsFilter = () => {
                     </div>
                     <div className="transaction-tags">
                       <span className={`chip ${item.type}`}>{typeLabel}</span>
+                      <span className="chip">{account}</span>
                       <span
                         className={`transaction-amount ${
                           isOut ? "negative" : "positive"
@@ -357,13 +378,15 @@ const TransactionsFilter = () => {
                       </span>
                     </div>
                     <div className="transaction-actions">
-                      <button
-                        className="button ghost small"
-                        type="button"
-                        onClick={() => handleEdit(item.id)}
-                      >
-                        Modifica
-                      </button>
+                      {item.type !== "transfer" && (
+                        <button
+                          className="button ghost small"
+                          type="button"
+                          onClick={() => handleEdit(item.id)}
+                        >
+                          Modifica
+                        </button>
+                      )}
                       <button
                         className="button ghost small"
                         type="button"

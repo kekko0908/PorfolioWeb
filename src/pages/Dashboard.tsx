@@ -1,24 +1,40 @@
+import { useState } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
+  buildAccountBalances,
   buildMonthlySeries,
   buildPortfolioSeries,
   calculateCagr,
   calculateMonthlyBurnRate,
   calculateNetWorth,
-  calculatePeRatio,
   calculateRoi,
   calculateSavingsRate,
   groupExpensesByCategory,
-  groupHoldingsByAssetClass
+  groupHoldingsByAssetClass,
+  sumHoldingsCost
 } from "../lib/metrics";
-import { formatCurrency, formatPercent, formatRatio } from "../lib/format";
+import {
+  formatCurrencySafe,
+  formatPercentSafe,
+  formatRatio
+} from "../lib/format";
 import { BarChart } from "../components/charts/BarChart";
 import { AreaChart } from "../components/charts/AreaChart";
 import { DonutChart } from "../components/charts/DonutChart";
 
+const accountTypeLabels: Record<string, string> = {
+  bank: "Banca",
+  debit: "Carta debito",
+  credit: "Carta credito",
+  cash: "Cash",
+  paypal: "PayPal",
+  other: "Altro"
+};
+
 const Dashboard = () => {
-  const { categories, transactions, holdings, settings, loading, error } =
+  const { accounts, categories, transactions, holdings, settings, loading, error } =
     usePortfolioData();
+  const [allocationFocus, setAllocationFocus] = useState<string | null>(null);
   const currency = settings?.base_currency ?? "EUR";
   const netWorth = calculateNetWorth(holdings, transactions);
   const savingsRate = calculateSavingsRate(transactions);
@@ -26,12 +42,49 @@ const Dashboard = () => {
   const runway = burnRate > 0 ? (settings?.emergency_fund ?? 0) / burnRate : 0;
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
-  const peRatio = calculatePeRatio(holdings);
+  const totalCap = sumHoldingsCost(holdings);
 
   const cashflowSeries = buildMonthlySeries(transactions, 6);
   const portfolioSeries = buildPortfolioSeries(holdings, 12);
-  const allocation = groupHoldingsByAssetClass(holdings);
-  const expenseMix = groupExpensesByCategory(transactions, categories).slice(0, 6);
+  const accountBalances = buildAccountBalances(accounts, transactions);
+  const cashTotal = accountBalances.reduce((sum, item) => sum + item.balance, 0);
+  const allocationBase = groupHoldingsByAssetClass(holdings);
+  const allocation =
+    cashTotal > 0
+      ? [...allocationBase, { label: "Cash", value: cashTotal }]
+      : allocationBase;
+  const allocationDetail = allocationFocus
+    ? holdings
+        .filter((item) => item.asset_class === allocationFocus)
+        .map((item) => ({
+          label: `${item.emoji ? `${item.emoji} ` : ""}${item.name}`,
+          value: item.current_value
+        }))
+    : [];
+  const allocationCashDetail =
+    allocationFocus === "Cash"
+      ? accountBalances.map((account) => ({
+          label: `${account.emoji ? `${account.emoji} ` : ""}${account.name}`,
+          value: account.balance
+        }))
+      : [];
+  const expenseMix = groupExpensesByCategory(transactions, categories);
+  const topExpenses = expenseMix.slice(0, 4);
+  const expenseTotal = expenseMix.reduce((sum, item) => sum + item.value, 0);
+  const expenseCount = transactions.filter((item) => item.type === "expense").length;
+
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const monthTransactions = transactions.filter((item) => item.date.startsWith(monthKey));
+  const monthIncome = monthTransactions
+    .filter((item) => item.type === "income")
+    .reduce((sum, item) => sum + item.amount, 0);
+  const monthExpense = monthTransactions
+    .filter((item) => item.type === "expense")
+    .reduce((sum, item) => sum + item.amount, 0);
+  const monthNet = monthIncome - monthExpense;
+  const avgDailyExpense = now.getDate() > 0 ? monthExpense / now.getDate() : 0;
+  const topExpense = expenseMix[0];
 
   if (loading) {
     return <div className="card">Caricamento dashboard...</div>;
@@ -55,17 +108,17 @@ const Dashboard = () => {
       <div className="stat-grid">
         <div className="stat-card">
           <span className="stat-label">Net Worth</span>
-          <span className="stat-value">{formatCurrency(netWorth, currency)}</span>
+          <span className="stat-value">{formatCurrencySafe(netWorth, currency)}</span>
           <span className="stat-trend">Valore patrimoniale totale</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">Savings Rate</span>
-          <span className="stat-value">{formatPercent(savingsRate)}</span>
+          <span className="stat-value">{formatPercentSafe(savingsRate)}</span>
           <span className="stat-trend">(Entrate - Uscite) / Entrate</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">Burn Rate Mensile</span>
-          <span className="stat-value">{formatCurrency(burnRate, currency)}</span>
+          <span className="stat-value">{formatCurrencySafe(burnRate, currency)}</span>
           <span className="stat-trend">Spese fisse ultime 4 settimane</span>
         </div>
         <div className="stat-card">
@@ -77,16 +130,52 @@ const Dashboard = () => {
         </div>
         <div className="stat-card">
           <span className="stat-label">ROI</span>
-          <span className="stat-value">{formatPercent(roi)}</span>
+          <span className="stat-value">{formatPercentSafe(roi)}</span>
           <span className="stat-trend">Rendimento totale holdings</span>
         </div>
         <div className="stat-card">
-          <span className="stat-label">CAGR + P/E</span>
-          <span className="stat-value">
-            {formatPercent(cagr)} | {formatRatio(peRatio)}
-          </span>
-          <span className="stat-trend">Crescita annua + multipli</span>
+          <span className="stat-label">CAGR</span>
+          <span className="stat-value">{formatPercentSafe(cagr)}</span>
+          <span className="stat-trend">Crescita annua composta</span>
         </div>
+        <div className="stat-card">
+          <span className="stat-label">Capitale Investito</span>
+          <span className="stat-value">{formatCurrencySafe(totalCap, currency)}</span>
+          <span className="stat-trend">Totale capitale allocato</span>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-header">
+          <div>
+            <h3>Conti attivi</h3>
+            <p className="section-subtitle">Saldo aggiornato per ogni conto</p>
+          </div>
+        </div>
+        {accountBalances.length === 0 ? (
+          <div className="empty">Nessun conto creato.</div>
+        ) : (
+          <div className="account-grid">
+            {accountBalances.map((account) => (
+              <div className="account-card" key={account.id}>
+                <div className="account-meta">
+                  <span className="account-emoji">
+                    {account.emoji && account.emoji.trim() ? account.emoji : "O"}
+                  </span>
+                  <div>
+                    <strong>{account.name}</strong>
+                    <span className="section-subtitle">
+                      {accountTypeLabels[account.type] ?? account.type}
+                    </span>
+                  </div>
+                </div>
+                <div className="account-balance">
+                  {formatCurrencySafe(account.balance, account.currency)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid-2">
@@ -119,10 +208,38 @@ const Dashboard = () => {
       <div className="grid-2">
         <div className="chart-card">
           <div>
-            <strong>Asset Allocation</strong>
-            <p className="section-subtitle">Distribuzione percentuale attuale</p>
+            <strong>
+              {allocationFocus
+                ? `Asset Allocation - ${allocationFocus}`
+                : "Asset Allocation"}
+            </strong>
+            <p className="section-subtitle">
+              {allocationFocus
+                ? "Dettaglio percentuale per singolo asset"
+                : "Distribuzione percentuale attuale"}
+            </p>
+            {allocationFocus && (
+              <button
+                className="button ghost small"
+                type="button"
+                onClick={() => setAllocationFocus(null)}
+              >
+                Torna indietro
+              </button>
+            )}
           </div>
-          <DonutChart data={allocation} />
+          <DonutChart
+            data={
+              allocationFocus === "Cash"
+                ? allocationCashDetail
+                : allocationFocus
+                  ? allocationDetail
+                  : allocation
+            }
+            onSelect={
+              allocationFocus ? undefined : (label) => setAllocationFocus(label)
+            }
+          />
         </div>
         <div className="chart-card">
           <div>
@@ -130,20 +247,91 @@ const Dashboard = () => {
             <p className="section-subtitle">Categorie piu rilevanti</p>
           </div>
           {expenseMix.length > 0 ? (
-            <div className="grid-2">
-              {expenseMix.map((item) => (
-                <div className="stat-card" key={item.label}>
-                  <span className="stat-label">{item.label}</span>
+            <div className="expense-panel">
+              <div className="grid-3">
+                <div className="stat-card">
+                  <span className="stat-label">Totale spese</span>
                   <span className="stat-value">
-                    {formatCurrency(item.value, currency)}
+                    {formatCurrencySafe(expenseTotal, currency)}
                   </span>
-                  <span className="stat-trend">Totale uscita</span>
+                  <span className="stat-trend">Periodo complessivo</span>
                 </div>
-              ))}
+                <div className="stat-card">
+                  <span className="stat-label">Numero spese</span>
+                  <span className="stat-value">{expenseCount}</span>
+                  <span className="stat-trend">Transazioni registrate</span>
+                </div>
+                <div className="stat-card">
+                  <span className="stat-label">Top categoria</span>
+                  <span className="stat-value">
+                    {topExpense ? topExpense.label : "N/D"}
+                  </span>
+                  <span className="stat-trend">
+                    {topExpense
+                      ? formatCurrencySafe(topExpense.value, currency)
+                      : "N/D"}
+                  </span>
+                </div>
+              </div>
+              <div className="expense-bars">
+                {topExpenses.map((item) => {
+                  const ratio = expenseTotal ? (item.value / expenseTotal) * 100 : 0;
+                  return (
+                    <div className="expense-bar" key={item.label}>
+                      <div>
+                        <strong>{item.label}</strong>
+                        <span className="section-subtitle">
+                          {formatCurrencySafe(item.value, currency)}
+                        </span>
+                      </div>
+                      <div className="expense-track">
+                        <div
+                          className="expense-fill"
+                          style={{ width: `${ratio}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <div className="empty">Nessuna spesa registrata.</div>
           )}
+        </div>
+      </div>
+
+      <div className="grid-3">
+        <div className="card impact-card">
+          <h3>Snapshot mese</h3>
+          <div className="impact-values">
+            <div>
+              <span className="stat-label">Entrate</span>
+              <strong>{formatCurrencySafe(monthIncome, currency)}</strong>
+            </div>
+            <div>
+              <span className="stat-label">Uscite</span>
+              <strong>{formatCurrencySafe(monthExpense, currency)}</strong>
+            </div>
+            <div>
+              <span className="stat-label">Netto</span>
+              <strong>{formatCurrencySafe(monthNet, currency)}</strong>
+            </div>
+          </div>
+        </div>
+        <div className="card impact-card">
+          <h3>Spesa media giornaliera</h3>
+          <p className="impact-value">
+            {formatCurrencySafe(avgDailyExpense, currency)}
+          </p>
+          <span className="section-subtitle">Calcolata sul mese corrente</span>
+        </div>
+        <div className="card impact-card">
+          <h3>Categoria dominante</h3>
+          <p className="impact-value">{topExpense ? topExpense.label : "N/D"}</p>
+          <span className="section-subtitle">
+            {topExpense ? formatCurrencySafe(topExpense.value, currency) : "N/D"}
+          </span>
         </div>
       </div>
     </div>

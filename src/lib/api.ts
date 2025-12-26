@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import type { Category, Holding, Setting, Transaction } from "../types";
+import type { Account, Category, Holding, Setting, Transaction } from "../types";
 
 const handleError = (error: unknown) => {
   if (error) {
@@ -10,9 +10,6 @@ const handleError = (error: unknown) => {
 const toNumber = (value: unknown) =>
   value === null || value === undefined ? 0 : Number(value);
 
-const toOptionalNumber = (value: unknown) =>
-  value === null || value === undefined ? null : Number(value);
-
 export const fetchCategories = async (): Promise<Category[]> => {
   const { data, error } = await supabase
     .from("categories")
@@ -21,6 +18,38 @@ export const fetchCategories = async (): Promise<Category[]> => {
     .order("name");
   handleError(error);
   return (data ?? []) as Category[];
+};
+
+export const fetchAccounts = async (): Promise<Account[]> => {
+  const { data, error } = await supabase
+    .from("accounts")
+    .select("*")
+    .order("created_at", { ascending: true });
+  handleError(error);
+  return (data ?? []).map((item) => ({
+    ...item,
+    opening_balance: toNumber(item.opening_balance)
+  })) as Account[];
+};
+
+export const createAccount = async (
+  payload: Omit<Account, "id" | "created_at" | "user_id">
+): Promise<void> => {
+  const { error } = await supabase.from("accounts").insert(payload);
+  handleError(error);
+};
+
+export const updateAccount = async (
+  id: string,
+  payload: Partial<Account>
+): Promise<void> => {
+  const { error } = await supabase.from("accounts").update(payload).eq("id", id);
+  handleError(error);
+};
+
+export const deleteAccount = async (id: string): Promise<void> => {
+  const { error } = await supabase.from("accounts").delete().eq("id", id);
+  handleError(error);
 };
 
 export const createCategory = async (
@@ -102,9 +131,11 @@ export const fetchHoldings = async (): Promise<Holding[]> => {
   handleError(error);
   return (data ?? []).map((item) => ({
     ...item,
-    cost_basis: toNumber(item.cost_basis),
-    current_value: toNumber(item.current_value),
-    pe_ratio: toOptionalNumber(item.pe_ratio)
+    emoji: item.emoji ?? null,
+    quantity: toNumber(item.quantity),
+    avg_cost: toNumber(item.avg_cost),
+    total_cap: toNumber(item.total_cap),
+    current_value: toNumber(item.current_value)
   })) as Holding[];
 };
 

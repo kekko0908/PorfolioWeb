@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Category, Holding, Setting, Transaction } from "../types";
+import type { Account, Category, Holding, Setting, Transaction } from "../types";
 import {
+  fetchAccounts,
   fetchCategories,
   fetchHoldings,
   fetchSettings,
@@ -8,6 +9,7 @@ import {
 } from "../lib/api";
 
 export const usePortfolioData = () => {
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -19,13 +21,21 @@ export const usePortfolioData = () => {
     setLoading(true);
     setError(null);
     try {
-      const [nextCategories, nextTransactions, nextHoldings, nextSettings] =
+      const [
+        nextAccounts,
+        nextCategories,
+        nextTransactions,
+        nextHoldings,
+        nextSettings
+      ] =
         await Promise.all([
+          fetchAccounts(),
           fetchCategories(),
           fetchTransactions(),
           fetchHoldings(),
           fetchSettings()
         ]);
+      setAccounts(nextAccounts);
       setCategories(nextCategories);
       setTransactions(nextTransactions);
       setHoldings(nextHoldings);
@@ -42,6 +52,7 @@ export const usePortfolioData = () => {
   }, [refresh]);
 
   return {
+    accounts,
     categories,
     transactions,
     holdings,
