@@ -10,7 +10,7 @@ import {
   updateAccount,
   upsertSettings
 } from "../lib/api";
-import type { Account, AccountType, CategoryType, TransactionType } from "../types";
+import type { Account, AccountType, TransactionType } from "../types";
 
 const accountTypes: { value: AccountType; label: string }[] = [
   { value: "bank", label: "Banca" },

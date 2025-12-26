@@ -68,6 +68,18 @@ export interface Account {
   created_at: string;
 }
 
+export interface Goal {
+  id: string;
+  user_id: string;
+  account_id: string;
+  category_id: string | null;
+  title: string;
+  emoji: string | null;
+  target_amount: number;
+  due_date: string;
+  created_at: string;
+}
+
 export interface MonthlyPoint {
   label: string;
   value: number;

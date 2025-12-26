@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Account, Category, Holding, Setting, Transaction } from "../types";
+import type { Account, Category, Goal, Holding, Setting, Transaction } from "../types";
 import {
   fetchAccounts,
   fetchCategories,
+  fetchGoals,
   fetchHoldings,
   fetchSettings,
   fetchTransactions
@@ -11,6 +12,7 @@ import {
 export const usePortfolioData = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [settings, setSettings] = useState<Setting | null>(null);
@@ -24,6 +26,7 @@ export const usePortfolioData = () => {
       const [
         nextAccounts,
         nextCategories,
+        nextGoals,
         nextTransactions,
         nextHoldings,
         nextSettings
@@ -31,12 +34,14 @@ export const usePortfolioData = () => {
         await Promise.all([
           fetchAccounts(),
           fetchCategories(),
+          fetchGoals(),
           fetchTransactions(),
           fetchHoldings(),
           fetchSettings()
         ]);
       setAccounts(nextAccounts);
       setCategories(nextCategories);
+      setGoals(nextGoals);
       setTransactions(nextTransactions);
       setHoldings(nextHoldings);
       setSettings(nextSettings);
@@ -54,6 +59,7 @@ export const usePortfolioData = () => {
   return {
     accounts,
     categories,
+    goals,
     transactions,
     holdings,
     settings,

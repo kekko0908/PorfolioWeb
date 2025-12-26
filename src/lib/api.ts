@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import type { Account, Category, Holding, Setting, Transaction } from "../types";
+import type { Account, Category, Goal, Holding, Setting, Transaction } from "../types";
 
 const handleError = (error: unknown) => {
   if (error) {
@@ -164,6 +164,38 @@ export const updateHolding = async (
 
 export const deleteHolding = async (id: string): Promise<void> => {
   const { error } = await supabase.from("holdings").delete().eq("id", id);
+  handleError(error);
+};
+
+export const fetchGoals = async (): Promise<Goal[]> => {
+  const { data, error } = await supabase
+    .from("goals")
+    .select("*")
+    .order("created_at", { ascending: false });
+  handleError(error);
+  return (data ?? []).map((item) => ({
+    ...item,
+    target_amount: toNumber(item.target_amount)
+  })) as Goal[];
+};
+
+export const createGoal = async (
+  payload: Omit<Goal, "id" | "created_at" | "user_id">
+): Promise<void> => {
+  const { error } = await supabase.from("goals").insert(payload);
+  handleError(error);
+};
+
+export const updateGoal = async (
+  id: string,
+  payload: Partial<Goal>
+): Promise<void> => {
+  const { error } = await supabase.from("goals").update(payload).eq("id", id);
+  handleError(error);
+};
+
+export const deleteGoal = async (id: string): Promise<void> => {
+  const { error } = await supabase.from("goals").delete().eq("id", id);
   handleError(error);
 };
 

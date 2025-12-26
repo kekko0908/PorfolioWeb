@@ -9,7 +9,7 @@ import {
   updateTransaction
 } from "../lib/api";
 import { formatCurrency } from "../lib/format";
-import type { Category, CategoryType, Transaction, TransactionType } from "../types";
+import type { Category, Transaction, TransactionType } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
 

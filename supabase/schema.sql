@@ -58,6 +58,19 @@ create table if not exists public.holdings (
   created_at timestamptz not null default now()
 );
 
+-- Goals
+create table if not exists public.goals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  account_id uuid not null references public.accounts on delete restrict,
+  category_id uuid references public.categories on delete set null,
+  title text not null,
+  emoji text,
+  target_amount numeric(14, 2) not null,
+  due_date date not null,
+  created_at timestamptz not null default now()
+);
+
 -- Settings
 create table if not exists public.settings (
   id uuid primary key default gen_random_uuid(),
@@ -88,6 +101,7 @@ alter table public.categories enable row level security;
 alter table public.accounts enable row level security;
 alter table public.transactions enable row level security;
 alter table public.holdings enable row level security;
+alter table public.goals enable row level security;
 alter table public.settings enable row level security;
 
 create policy "Categories select" on public.categories
@@ -124,6 +138,15 @@ create policy "Holdings insert" on public.holdings
 create policy "Holdings update" on public.holdings
   for update using (auth.uid() = user_id);
 create policy "Holdings delete" on public.holdings
+  for delete using (auth.uid() = user_id);
+
+create policy "Goals select" on public.goals
+  for select using (auth.uid() = user_id);
+create policy "Goals insert" on public.goals
+  for insert with check (auth.uid() = user_id);
+create policy "Goals update" on public.goals
+  for update using (auth.uid() = user_id);
+create policy "Goals delete" on public.goals
   for delete using (auth.uid() = user_id);
 
 create policy "Settings select" on public.settings

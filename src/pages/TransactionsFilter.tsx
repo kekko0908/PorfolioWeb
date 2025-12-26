@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import { deleteTransaction } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
-import type { Category, CategoryType, TransactionType } from "../types";
+import type { Category, TransactionType } from "../types";
 
 const weekdayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 
