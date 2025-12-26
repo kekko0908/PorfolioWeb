@@ -12,7 +12,11 @@ const navItems = [
   },
   { to: "/goals", label: "Obiettivi" },
   { to: "/categories", label: "Categorie" },
-  { to: "/analytics", label: "Analytics" },
+  {
+    to: "/analytics",
+    label: "Analytics",
+    children: [{ to: "/analytics/stress-test", label: "Stress test" }]
+  },
   { to: "/settings", label: "Impostazioni" }
 ];
 

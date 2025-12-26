@@ -70,6 +70,18 @@ label {
   color: var(--muted);
 }
 
+.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -587,6 +599,11 @@ label {
   width: 100%;
 }
 
+.allocation-slider:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .allocation-value {
   font-size: 13px;
   color: var(--muted);
@@ -596,6 +613,11 @@ label {
 .allocation-total {
   font-size: 12px;
   color: var(--muted);
+}
+
+.allocation-cap {
+  display: grid;
+  gap: 6px;
 }
 
 .allocation-actions {
@@ -645,15 +667,21 @@ label {
 }
 
 .allocation-item-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px 12px;
   font-size: 12px;
   color: var(--muted);
 }
 
 .allocation-action {
   font-weight: 600;
+}
+
+.allocation-action-share {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .allocation-action.buy {
@@ -1342,6 +1370,16 @@ label {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.asset-item-text {
+  display: grid;
+  gap: 4px;
+}
+
+.asset-subinfo {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .asset-item-header {
   background: transparent;
   border: 1px dashed rgba(255, 255, 255, 0.2);
@@ -1493,6 +1531,37 @@ label {
 .holding-action.hold {
   color: var(--muted);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.stress-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.stress-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stress-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stress-metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stress-advice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .auth-shell {

@@ -29,3 +29,32 @@ export const fetchGlobalQuote = async (symbol: string) => {
   }
   return price;
 };
+
+export const fetchAssetOverview = async (symbol: string) => {
+  if (!API_KEY) {
+    throw new Error("API key Alpha Vantage mancante.");
+  }
+  const params = new URLSearchParams({
+    function: "OVERVIEW",
+    symbol,
+    apikey: API_KEY
+  });
+  const response = await fetch(`${BASE_URL}?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error("Richiesta Alpha Vantage fallita.");
+  }
+  const data = (await response.json()) as Record<string, string>;
+  if (typeof data["Note"] === "string") {
+    throw new Error("Rate limit Alpha Vantage raggiunto. Riprova tra 1 minuto.");
+  }
+  if (!data.Symbol) {
+    throw new Error("Info ticker non disponibili per questo asset.");
+  }
+  return {
+    name: data.Name,
+    assetType: data.AssetType,
+    exchange: data.Exchange,
+    country: data.Country,
+    currency: data.Currency
+  };
+};

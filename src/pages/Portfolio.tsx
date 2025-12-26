@@ -9,7 +9,7 @@ import {
   formatCurrencySafe,
   formatPercentSafe
 } from "../lib/format";
-import { fetchGlobalQuote } from "../lib/market";
+import { fetchAssetOverview, fetchGlobalQuote } from "../lib/market";
 import { buildAccountBalances } from "../lib/metrics";
 import type { Holding } from "../types";
 
@@ -46,9 +46,25 @@ const Portfolio = () => {
   const [message, setMessage] = useState<string | null>(null);
   const [priceMessage, setPriceMessage] = useState<string | null>(null);
   const [priceLoading, setPriceLoading] = useState<string | null>(null);
+  const [tickerMessage, setTickerMessage] = useState<string | null>(null);
+  const [tickerLoading, setTickerLoading] = useState<string | null>(null);
+  const [tickerInfo, setTickerInfo] = useState<
+    Record<
+      string,
+      {
+        name?: string;
+        assetType?: string;
+        exchange?: string;
+        country?: string;
+        currency?: string;
+      }
+    >
+  >({});
   const [allocationMessage, setAllocationMessage] = useState<string | null>(null);
   const [targetMessage, setTargetMessage] = useState<string | null>(null);
   const [targetDrafts, setTargetDrafts] = useState<Record<string, number>>({});
+  const [cashCapInput, setCashCapInput] = useState("");
+  const [useCashCap, setUseCashCap] = useState(false);
   const [rebalanceMonths, setRebalanceMonths] = useState(6);
   const [allocationTargets, setAllocationTargets] = useState({
     cash: 20,
@@ -65,6 +81,11 @@ const Portfolio = () => {
 
   const currency = settings?.base_currency ?? "EUR";
   const isCash = form.asset_class === "Liquidita";
+  const cashCapValue = useMemo(() => {
+    if (!useCashCap || !cashCapInput.trim()) return null;
+    const parsed = Number(cashCapInput);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }, [cashCapInput, useCashCap]);
 
   useEffect(() => {
     if (!settings) return;
@@ -75,6 +96,12 @@ const Portfolio = () => {
       emergency: settings.target_emergency_pct ?? 10
     });
     setRebalanceMonths(settings.rebalance_months ?? 6);
+    setCashCapInput(
+      settings.cash_target_cap !== null && settings.cash_target_cap !== undefined
+        ? String(settings.cash_target_cap)
+        : ""
+    );
+    setUseCashCap(settings.cash_target_cap !== null && settings.cash_target_cap !== undefined);
   }, [settings]);
 
   useEffect(() => {
@@ -249,6 +276,27 @@ const Portfolio = () => {
     }
   };
 
+  const handleTickerInfo = async (item: Holding) => {
+    setTickerMessage(null);
+    const ticker = extractTicker(item.name);
+    if (!ticker) {
+      setTickerMessage("Inserisci il ticker all'inizio del nome (es. MWRD - ETF).");
+      return;
+    }
+    setTickerLoading(item.id);
+    try {
+      const info = await fetchAssetOverview(ticker);
+      setTickerInfo((prev) => ({
+        ...prev,
+        [item.id]: info
+      }));
+    } catch (err) {
+      setTickerMessage((err as Error).message);
+    } finally {
+      setTickerLoading(null);
+    }
+  };
+
   const handleAllocationChange = (
     key: "cash" | "etf" | "bonds" | "emergency",
     value: number
@@ -267,6 +315,7 @@ const Portfolio = () => {
         user_id: session.user.id,
         base_currency: settings?.base_currency ?? "EUR",
         emergency_fund: emergencyFund,
+        cash_target_cap: useCashCap ? cashCapValue : null,
         target_cash_pct: allocationTargets.cash,
         target_etf_pct: allocationTargets.etf,
         target_bond_pct: allocationTargets.bonds,
@@ -363,6 +412,60 @@ const Portfolio = () => {
     allocationTargets.etf +
     allocationTargets.bonds +
     allocationTargets.emergency;
+  const allocationPercentDisplay = Number(allocationPercentTotal.toFixed(1));
+  const allocationPercentWithinRange =
+    Math.abs(allocationPercentTotal - 100) <= 0.1;
+
+  useEffect(() => {
+    if (!useCashCap || cashCapValue === null || cashCapValue === undefined) return;
+    if (targetTotal <= 0) return;
+    const maxCashPct = Math.min(100, (cashCapValue / targetTotal) * 100);
+    const keys: Array<"etf" | "bonds" | "emergency"> = ["etf", "bonds", "emergency"];
+    const otherTotal = keys.reduce((sum, key) => sum + allocationTargets[key], 0);
+    const remaining = Math.max(0, 100 - maxCashPct);
+    const next = {
+      ...allocationTargets,
+      cash: Number(maxCashPct.toFixed(1))
+    };
+    if (otherTotal <= 0) {
+      const share = keys.length > 0 ? remaining / keys.length : 0;
+      let allocated = 0;
+      keys.forEach((key, index) => {
+        if (index === keys.length - 1) {
+          next[key] = Number((remaining - allocated).toFixed(1));
+        } else {
+          const value = Number(share.toFixed(1));
+          next[key] = value;
+          allocated += value;
+        }
+      });
+    } else {
+      let allocated = 0;
+      keys.forEach((key, index) => {
+        if (index === keys.length - 1) {
+          next[key] = Number((remaining - allocated).toFixed(1));
+        } else {
+          const value = (allocationTargets[key] / otherTotal) * remaining;
+          const rounded = Number(value.toFixed(1));
+          next[key] = rounded;
+          allocated += rounded;
+        }
+      });
+    }
+    const same =
+      keys.every((key) => Math.abs(next[key] - allocationTargets[key]) < 0.05) &&
+      Math.abs(next.cash - allocationTargets.cash) < 0.05;
+    if (same) return;
+    setAllocationTargets(next);
+  }, [
+    cashCapValue,
+    targetTotal,
+    useCashCap,
+    allocationTargets.cash,
+    allocationTargets.etf,
+    allocationTargets.bonds,
+    allocationTargets.emergency
+  ]);
 
   const getClassTargetTotal = (label: string, fallback: number) => {
     if (targetTotal <= 0) return fallback;
@@ -372,17 +475,15 @@ const Portfolio = () => {
   };
 
   const buildInternalTargets = (items: Holding[]) => {
-    const defined = items
-      .map((item) => targetDrafts[item.id] ?? item.target_pct)
-      .filter((value) => typeof value === "number" && Number.isFinite(value)) as number[];
-    const definedTotal = defined.reduce((sum, value) => sum + value, 0);
-    const undefinedCount = items.length - defined.length;
-    const fallback =
-      undefinedCount > 0 ? Math.max(0, (100 - definedTotal) / undefinedCount) : 0;
+    const totalValue = items.reduce((sum, item) => sum + item.current_value, 0);
     const entries = items.map((item) => {
       const raw = targetDrafts[item.id] ?? item.target_pct;
       const target =
-        typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
+        typeof raw === "number" && Number.isFinite(raw)
+          ? raw
+          : totalValue > 0
+            ? (item.current_value / totalValue) * 100
+            : 0;
       return { id: item.id, target };
     });
     const total = entries.reduce((sum, item) => sum + item.target, 0);
@@ -505,6 +606,7 @@ const Portfolio = () => {
                   type="range"
                   min="0"
                   max="100"
+                  disabled={item.key === "cash" && useCashCap}
                   value={allocationTargets[item.key as keyof typeof allocationTargets]}
                   onChange={(event) =>
                     handleAllocationChange(
@@ -519,9 +621,34 @@ const Portfolio = () => {
               </div>
             ))}
             <div className="allocation-total">
-              Totale percentuali: {allocationPercentTotal}%
+              Totale percentuali: {allocationPercentDisplay}%
             </div>
-            {allocationPercentTotal !== 100 && (
+            <div className="allocation-cap">
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={useCashCap}
+                  onChange={(event) => setUseCashCap(event.target.checked)}
+                />
+                Usa limite massimo Cash
+              </label>
+              <label>
+                Limite Cash (max)
+                <input
+                  className="input"
+                  type="number"
+                  step="0.01"
+                  placeholder="Nessun limite"
+                  value={cashCapInput}
+                  onChange={(event) => setCashCapInput(event.target.value)}
+                  disabled={!useCashCap}
+                />
+              </label>
+              <span className="section-subtitle">
+                Se impostato, la quota cash viene ridotta al massimo e ridistribuita.
+              </span>
+            </div>
+            {!allocationPercentWithinRange && (
               <div className="notice">
                 Consiglio: porta il totale al 100% per un ribilanciamento corretto.
               </div>
@@ -545,6 +672,8 @@ const Portfolio = () => {
                 const value = Math.abs(item.delta);
                 const actionClass =
                   item.delta > 0 ? "buy" : item.delta < 0 ? "sell" : "hold";
+                const deltaAbs = Math.abs(item.delta);
+                const share = targetTotal > 0 ? (deltaAbs / targetTotal) * 100 : 0;
                 return (
                   <div className={`allocation-item ${actionClass}`} key={item.label}>
                     <div className="allocation-item-header">
@@ -560,6 +689,11 @@ const Portfolio = () => {
                     </div>
                     <div className={`allocation-action ${actionClass}`}>
                       {action} {formatCurrencySafe(value, currency)}
+                      {share > 0 && (
+                        <span className="allocation-action-share">
+                          ({share.toFixed(1)}%)
+                        </span>
+                      )}
                     </div>
                   </div>
                 );
@@ -573,35 +707,6 @@ const Portfolio = () => {
 
       <div className="card">
         <h3>{editing ? "Modifica holding" : "Nuova holding"}</h3>
-        <div className="info-panel">
-          <div className="info-item">
-            <strong>Costo medio</strong>
-            <span>Prezzo medio pagato per ogni quota.</span>
-          </div>
-          <div className="info-item">
-            <strong>Quantita</strong>
-            <span>Numero di quote o pezzi acquistati.</span>
-          </div>
-          <div className="info-item">
-            <strong>Total Cap</strong>
-            <span>Calcolato automaticamente: quantita x costo medio.</span>
-          </div>
-          <div className="info-item">
-            <strong>Valore attuale</strong>
-            <span>Valore di mercato oggi, usato per ROI e CAGR.</span>
-          </div>
-          <div className="info-item">
-            <strong>Liquidita</strong>
-            <span>
-              Seleziona Liquidita per inserire solo l'importo: costo medio e
-              quantita non servono.
-            </span>
-          </div>
-          <div className="info-item">
-            <strong>Ticker per prezzi live</strong>
-            <span>Scrivi il ticker all'inizio del nome (es. MWRD - ETF).</span>
-          </div>
-        </div>
         <form className="form-grid" onSubmit={handleSubmit}>
           <input
             className="input"
@@ -708,6 +813,7 @@ const Portfolio = () => {
         </form>
         {message && <div className="notice">{message}</div>}
         {priceMessage && <div className="notice">{priceMessage}</div>}
+        {tickerMessage && <div className="notice">{tickerMessage}</div>}
         {error && <div className="error">{error}</div>}
       </div>
 
@@ -786,14 +892,35 @@ const Portfolio = () => {
                               item.avg_cost,
                               item.currency
                             )}`;
+                      const ticker = extractTicker(item.name);
+                      const info = tickerInfo[item.id];
+                      const infoLine = info
+                        ? [
+                            info.assetType,
+                            info.exchange,
+                            info.country,
+                            info.currency
+                          ]
+                            .filter(Boolean)
+                            .join(" • ")
+                        : null;
                       return (
                         <div className="asset-item" key={item.id}>
-                          <div>
+                          <div className="asset-item-text">
                             <strong>
                               {item.emoji ? `${item.emoji} ` : ""}
                               {item.name}
                             </strong>
                             <span className="section-subtitle">{subtitle}</span>
+                            {ticker && (
+                              <span className="asset-subinfo">Ticker: {ticker}</span>
+                            )}
+                            {info?.name && (
+                              <span className="asset-subinfo">{info.name}</span>
+                            )}
+                            {infoLine && (
+                              <span className="asset-subinfo">{infoLine}</span>
+                            )}
                           </div>
                           <div className="asset-item-metrics">
                             <div className="asset-item-metric">
@@ -829,6 +956,14 @@ const Portfolio = () => {
                               disabled={priceLoading === item.id}
                             >
                               {priceLoading === item.id ? "Live..." : "Live"}
+                            </button>
+                            <button
+                              className="button ghost small"
+                              type="button"
+                              onClick={() => handleTickerInfo(item)}
+                              disabled={tickerLoading === item.id}
+                            >
+                              {tickerLoading === item.id ? "Info..." : "Info"}
                             </button>
                             <button
                               className="button ghost small"
@@ -879,7 +1014,7 @@ const Portfolio = () => {
                           )}
                         </div>
                       </div>
-                      {Math.round(targetModel.total) !== 100 && (
+                      {Math.abs(targetModel.total - 100) > 0.1 && (
                         <div className="notice">
                           Porta il totale al 100% per un bilanciamento interno corretto.
                         </div>

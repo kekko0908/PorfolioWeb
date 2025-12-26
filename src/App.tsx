@@ -11,6 +11,7 @@ import TransactionsFilter from "./pages/TransactionsFilter";
 import Goals from "./pages/Goals";
 import Categories from "./pages/Categories";
 import Analytics from "./pages/Analytics";
+import StressTest from "./pages/StressTest";
 import Settings from "./pages/Settings";
 
 const Protected = ({ children }: { children: ReactNode }) => {
@@ -52,6 +53,7 @@ const AppRoutes = () => {
         <Route path="goals" element={<Goals />} />
         <Route path="categories" element={<Categories />} />
         <Route path="analytics" element={<Analytics />} />
+        <Route path="analytics/stress-test" element={<StressTest />} />
         <Route path="settings" element={<Settings />} />
       </Route>
     </Routes>

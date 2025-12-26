@@ -210,6 +210,7 @@ export const fetchSettings = async (): Promise<Setting | null> => {
   return {
     ...data,
     emergency_fund: toNumber(data.emergency_fund),
+    cash_target_cap: data.cash_target_cap === null ? null : toNumber(data.cash_target_cap),
     target_cash_pct: data.target_cash_pct ?? null,
     target_etf_pct: data.target_etf_pct ?? null,
     target_bond_pct: data.target_bond_pct ?? null,
@@ -223,6 +224,7 @@ export const upsertSettings = async (
     Partial<
       Pick<
         Setting,
+        | "cash_target_cap"
         | "target_cash_pct"
         | "target_etf_pct"
         | "target_bond_pct"

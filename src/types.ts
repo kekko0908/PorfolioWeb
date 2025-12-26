@@ -55,6 +55,7 @@ export interface Setting {
   user_id: string;
   base_currency: Currency;
   emergency_fund: number;
+  cash_target_cap: number | null;
   target_cash_pct: number | null;
   target_etf_pct: number | null;
   target_bond_pct: number | null;
