@@ -48,6 +48,7 @@ create table if not exists public.holdings (
   name text not null,
   asset_class text not null,
   emoji text,
+  target_pct numeric(5, 2),
   quantity numeric(14, 2) not null,
   avg_cost numeric(14, 2) not null,
   total_cap numeric(14, 2) not null,
@@ -62,7 +63,6 @@ create table if not exists public.holdings (
 create table if not exists public.goals (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users on delete cascade default auth.uid(),
-  account_id uuid not null references public.accounts on delete restrict,
   category_id uuid references public.categories on delete set null,
   title text not null,
   emoji text,
@@ -77,6 +77,11 @@ create table if not exists public.settings (
   user_id uuid not null unique references auth.users on delete cascade,
   base_currency text not null check (base_currency in ('EUR', 'USD')) default 'EUR',
   emergency_fund numeric(14, 2) not null default 0,
+  target_cash_pct numeric(5, 2) not null default 20,
+  target_etf_pct numeric(5, 2) not null default 50,
+  target_bond_pct numeric(5, 2) not null default 20,
+  target_emergency_pct numeric(5, 2) not null default 10,
+  rebalance_months integer not null default 6,
   updated_at timestamptz not null default now()
 );
 

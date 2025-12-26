@@ -39,6 +39,7 @@ export interface Holding {
   name: string;
   asset_class: string;
   emoji: string | null;
+  target_pct: number | null;
   quantity: number;
   avg_cost: number;
   total_cap: number;
@@ -54,6 +55,11 @@ export interface Setting {
   user_id: string;
   base_currency: Currency;
   emergency_fund: number;
+  target_cash_pct: number | null;
+  target_etf_pct: number | null;
+  target_bond_pct: number | null;
+  target_emergency_pct: number | null;
+  rebalance_months: number | null;
   updated_at: string;
 }
 
@@ -71,7 +77,6 @@ export interface Account {
 export interface Goal {
   id: string;
   user_id: string;
-  account_id: string;
   category_id: string | null;
   title: string;
   emoji: string | null;

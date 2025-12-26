@@ -217,6 +217,7 @@ const Settings = () => {
         "name",
         "asset_class",
         "emoji",
+        "target_pct",
         "quantity",
         "avg_cost",
         "total_cap",
@@ -229,6 +230,9 @@ const Settings = () => {
         item.name,
         item.asset_class,
         item.emoji ?? "",
+        item.target_pct !== null && item.target_pct !== undefined
+          ? String(item.target_pct)
+          : "",
         String(item.quantity),
         String(item.avg_cost),
         String(item.total_cap),
@@ -386,10 +390,12 @@ const Settings = () => {
         const total_cap = record.total_cap
           ? Number(record.total_cap)
           : quantity * avg_cost;
+        const target_pct = record.target_pct ? Number(record.target_pct) : null;
         return {
           name: record.name,
           asset_class: record.asset_class || "Altro",
           emoji: record.emoji || null,
+          target_pct: Number.isFinite(target_pct) ? target_pct : null,
           quantity,
           avg_cost,
           total_cap,
@@ -582,8 +588,8 @@ const Settings = () => {
           <div className="info-item">
             <strong>Holdings</strong>
             <span>
-              Campi: name, asset_class, emoji, quantity, avg_cost, total_cap,
-              current_value, currency, start_date, note.
+              Campi: name, asset_class, emoji, target_pct, quantity, avg_cost,
+              total_cap, current_value, currency, start_date, note.
             </span>
           </div>
         </div>

@@ -1,3 +1,5 @@
+import { useRef, useState } from "react";
+import type { MouseEvent } from "react";
 import { formatPercent } from "../../lib/format";
 
 interface DonutDatum {
@@ -30,10 +32,14 @@ const colorMap: Record<string, string> = {
 
 export const DonutChart = ({
   data,
-  onSelect
+  onSelect,
+  valueFormatter,
+  colors
 }: {
   data: DonutDatum[];
   onSelect?: (label: string) => void;
+  valueFormatter?: (value: number) => string;
+  colors?: Record<string, string>;
 }) => {
   const total = data.reduce((sum, item) => sum + item.value, 0);
   const radius = 58;
@@ -41,17 +47,49 @@ export const DonutChart = ({
   const circumference = 2 * Math.PI * radius;
   let offset = 0;
   const isInteractive = Boolean(onSelect && total > 0);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [hovered, setHovered] = useState<{
+    label: string;
+    value: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const normalized = total > 0 ? data : [{ label: "Nessun dato", value: 1 }];
 
+  const formatValue = (value: number) =>
+    valueFormatter ? valueFormatter(value) : value.toFixed(2);
+
+  const handleHover = (
+    event: MouseEvent<SVGCircleElement>,
+    item: DonutDatum
+  ) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setHovered({
+      label: item.label,
+      value: formatValue(item.value),
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top
+    });
+  };
+
   return (
-    <div>
-      <svg viewBox="0 0 160 160" width="100%" height="180">
+    <div className="chart-interactive" ref={containerRef}>
+      <svg
+        viewBox="0 0 160 160"
+        width="100%"
+        height="180"
+        onMouseLeave={() => setHovered(null)}
+      >
         <g transform="translate(80 80)">
           {normalized.map((item, index) => {
             const value = total > 0 ? item.value : 1;
             const dash = (value / (total > 0 ? total : 1)) * circumference;
-            const color = colorMap[item.label] ?? palette[index % palette.length];
+            const color =
+              colors?.[item.label] ??
+              colorMap[item.label] ??
+              palette[index % palette.length];
             const circle = (
               <circle
                 key={item.label}
@@ -67,6 +105,7 @@ export const DonutChart = ({
                 onClick={
                   isInteractive ? () => onSelect && onSelect(item.label) : undefined
                 }
+                onMouseMove={(event) => handleHover(event, item)}
                 style={isInteractive ? { cursor: "pointer" } : undefined}
               />
             );
@@ -85,6 +124,12 @@ export const DonutChart = ({
           </text>
         </g>
       </svg>
+      {hovered && (
+        <div className="chart-tooltip" style={{ left: hovered.x, top: hovered.y }}>
+          <strong>{hovered.label}</strong>
+          <span>{hovered.value}</span>
+        </div>
+      )}
       <div className="grid-2" style={{ gap: "10px" }}>
         {normalized.map((item, index) => {
           const percent = total > 0 ? item.value / total : 0;
@@ -101,7 +146,10 @@ export const DonutChart = ({
               <span
                 className="tag-dot"
                 style={{
-                  background: colorMap[item.label] ?? palette[index % palette.length]
+                  background:
+                    colors?.[item.label] ??
+                    colorMap[item.label] ??
+                    palette[index % palette.length]
                 }}
               />
               <span>{item.label}</span>

@@ -132,6 +132,7 @@ export const fetchHoldings = async (): Promise<Holding[]> => {
   return (data ?? []).map((item) => ({
     ...item,
     emoji: item.emoji ?? null,
+    target_pct: item.target_pct ?? null,
     quantity: toNumber(item.quantity),
     avg_cost: toNumber(item.avg_cost),
     total_cap: toNumber(item.total_cap),
@@ -208,12 +209,27 @@ export const fetchSettings = async (): Promise<Setting | null> => {
   if (!data) return null;
   return {
     ...data,
-    emergency_fund: toNumber(data.emergency_fund)
+    emergency_fund: toNumber(data.emergency_fund),
+    target_cash_pct: data.target_cash_pct ?? null,
+    target_etf_pct: data.target_etf_pct ?? null,
+    target_bond_pct: data.target_bond_pct ?? null,
+    target_emergency_pct: data.target_emergency_pct ?? null,
+    rebalance_months: data.rebalance_months ?? null
   } as Setting;
 };
 
 export const upsertSettings = async (
-  payload: Pick<Setting, "user_id" | "base_currency" | "emergency_fund">
+  payload: Pick<Setting, "user_id" | "base_currency" | "emergency_fund"> &
+    Partial<
+      Pick<
+        Setting,
+        | "target_cash_pct"
+        | "target_etf_pct"
+        | "target_bond_pct"
+        | "target_emergency_pct"
+        | "rebalance_months"
+      >
+    >
 ): Promise<void> => {
   const { error } = await supabase.from("settings").upsert(payload, {
     onConflict: "user_id"

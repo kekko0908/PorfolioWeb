@@ -1,13 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { useAuth } from "../contexts/AuthContext";
 import { usePortfolioData } from "../hooks/usePortfolioData";
-import { createHolding, deleteHolding, updateHolding } from "../lib/api";
+import { createHolding, deleteHolding, updateHolding, upsertSettings } from "../lib/api";
+import { DonutChart } from "../components/charts/DonutChart";
 import {
   formatCurrency,
   formatCurrencySafe,
   formatPercentSafe
 } from "../lib/format";
 import { fetchGlobalQuote } from "../lib/market";
+import { buildAccountBalances } from "../lib/metrics";
 import type { Holding } from "../types";
 
 const assetClasses = [
@@ -35,15 +38,55 @@ const emptyForm = {
 };
 
 const Portfolio = () => {
-  const { holdings, settings, refresh, loading, error } = usePortfolioData();
+  const { session } = useAuth();
+  const { accounts, transactions, holdings, settings, refresh, loading, error } =
+    usePortfolioData();
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Holding | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [priceMessage, setPriceMessage] = useState<string | null>(null);
   const [priceLoading, setPriceLoading] = useState<string | null>(null);
+  const [allocationMessage, setAllocationMessage] = useState<string | null>(null);
+  const [targetMessage, setTargetMessage] = useState<string | null>(null);
+  const [targetDrafts, setTargetDrafts] = useState<Record<string, number>>({});
+  const [rebalanceMonths, setRebalanceMonths] = useState(6);
+  const [allocationTargets, setAllocationTargets] = useState({
+    cash: 20,
+    etf: 50,
+    bonds: 20,
+    emergency: 10
+  });
+  const [allocationColors, setAllocationColors] = useState({
+    Cash: "#22c55e",
+    ETF: "#ef4444",
+    Obbligazioni: "#f59e0b",
+    "Fondo emergenza": "#60a5fa"
+  });
 
   const currency = settings?.base_currency ?? "EUR";
   const isCash = form.asset_class === "Liquidita";
+
+  useEffect(() => {
+    if (!settings) return;
+    setAllocationTargets({
+      cash: settings.target_cash_pct ?? 20,
+      etf: settings.target_etf_pct ?? 50,
+      bonds: settings.target_bond_pct ?? 20,
+      emergency: settings.target_emergency_pct ?? 10
+    });
+    setRebalanceMonths(settings.rebalance_months ?? 6);
+  }, [settings]);
+
+  useEffect(() => {
+    setTargetDrafts((prev) => {
+      const validIds = new Set(holdings.map((item) => item.id));
+      const next: Record<string, number> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        if (validIds.has(key)) next[key] = value;
+      });
+      return next;
+    });
+  }, [holdings]);
 
   const extractTicker = (name: string) => {
     const trimmed = name.trim();
@@ -71,13 +114,17 @@ const Portfolio = () => {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage(null);
+    setTargetMessage(null);
+    let customMessage: string | null = null;
     const currentValue = Number(form.current_value);
     const quantity = isCash ? 1 : Number(form.quantity);
     const avgCost = isCash ? currentValue : Number(form.avg_cost);
+    const ticker = extractTicker(form.name);
     const payload = {
       name: form.name,
       asset_class: form.asset_class,
       emoji: form.emoji.trim() || null,
+      target_pct: editing?.target_pct ?? null,
       quantity: Number.isFinite(quantity) ? quantity : 0,
       avg_cost: Number.isFinite(avgCost) ? avgCost : 0,
       total_cap: Number.isFinite(totalCap) ? totalCap : 0,
@@ -91,10 +138,62 @@ const Portfolio = () => {
       if (editing) {
         await updateHolding(editing.id, payload);
       } else {
-        await createHolding(payload);
+        const match =
+          !isCash && ticker
+            ? holdings.find(
+                (item) =>
+                  extractTicker(item.name) === ticker &&
+                  item.asset_class === form.asset_class
+              )
+            : null;
+        if (match) {
+          if (match.currency !== payload.currency) {
+            setMessage(
+              "Ticker gia presente con valuta diversa. Aggiorna la holding esistente."
+            );
+            return;
+          }
+          const newQuantity = match.quantity + (Number.isFinite(quantity) ? quantity : 0);
+          const newTotalCap =
+            match.total_cap + (Number.isFinite(totalCap) ? totalCap : 0);
+          const avgUnitPrice =
+            quantity > 0 && Number.isFinite(currentValue) && currentValue > 0
+              ? currentValue / quantity
+              : match.quantity > 0
+                ? match.current_value / match.quantity
+                : 0;
+          const newCurrentValue =
+            avgUnitPrice > 0
+              ? avgUnitPrice * newQuantity
+              : match.current_value + (Number.isFinite(currentValue) ? currentValue : 0);
+          const newAvgCost = newQuantity > 0 ? newTotalCap / newQuantity : 0;
+          const newStartDate =
+            match.start_date && form.start_date
+              ? match.start_date < form.start_date
+                ? match.start_date
+                : form.start_date
+              : match.start_date || form.start_date;
+
+          await updateHolding(match.id, {
+            name: match.name,
+            asset_class: match.asset_class,
+            emoji: payload.emoji ?? match.emoji,
+            target_pct: match.target_pct ?? null,
+            quantity: newQuantity,
+            avg_cost: newAvgCost,
+            total_cap: newTotalCap,
+            current_value: newCurrentValue,
+            currency: payload.currency,
+            start_date: newStartDate,
+            note: payload.note || match.note
+          });
+          customMessage = `Holding unita a ${match.name}.`;
+        } else {
+          await createHolding(payload);
+        }
       }
       await refresh();
-      setMessage("Salvataggio completato.");
+      setMessage(customMessage ?? "Salvataggio completato.");
       resetForm();
     } catch (err) {
       setMessage((err as Error).message);
@@ -150,6 +249,37 @@ const Portfolio = () => {
     }
   };
 
+  const handleAllocationChange = (
+    key: "cash" | "etf" | "bonds" | "emergency",
+    value: number
+  ) => {
+    setAllocationTargets((prev) => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  const handleSaveAllocation = async () => {
+    if (!session) return;
+    setAllocationMessage(null);
+    try {
+      await upsertSettings({
+        user_id: session.user.id,
+        base_currency: settings?.base_currency ?? "EUR",
+        emergency_fund: emergencyFund,
+        target_cash_pct: allocationTargets.cash,
+        target_etf_pct: allocationTargets.etf,
+        target_bond_pct: allocationTargets.bonds,
+        target_emergency_pct: allocationTargets.emergency,
+        rebalance_months: rebalanceMonths
+      });
+      await refresh();
+      setAllocationMessage("Asset allocation salvata.");
+    } catch (err) {
+      setAllocationMessage((err as Error).message);
+    }
+  };
+
   const grouped = useMemo(() => {
     const map = new Map<
       string,
@@ -174,6 +304,117 @@ const Portfolio = () => {
     }));
   }, [holdings]);
 
+  const accountBalances = useMemo(
+    () => buildAccountBalances(accounts, transactions),
+    [accounts, transactions]
+  );
+  const emergencyFund = settings?.emergency_fund ?? 0;
+  const cashTotal = accountBalances.reduce((sum, item) => sum + item.balance, 0);
+  const cashAvailable = Math.max(cashTotal - emergencyFund, 0);
+  const etfValue = holdings
+    .filter((item) => item.asset_class === "ETF")
+    .reduce((sum, item) => sum + item.current_value, 0);
+  const bondValue = holdings
+    .filter((item) => item.asset_class === "Obbligazioni")
+    .reduce((sum, item) => sum + item.current_value, 0);
+  const allocationTotal = cashAvailable + emergencyFund + etfValue + bondValue;
+  const targetTotal = allocationTotal > 0 ? allocationTotal : 0;
+  const allocationData = [
+    { label: "Cash", value: (allocationTargets.cash / 100) * targetTotal },
+    { label: "ETF", value: (allocationTargets.etf / 100) * targetTotal },
+    {
+      label: "Obbligazioni",
+      value: (allocationTargets.bonds / 100) * targetTotal
+    },
+    {
+      label: "Fondo emergenza",
+      value: (allocationTargets.emergency / 100) * targetTotal
+    }
+  ];
+
+  const allocationGap = [
+    {
+      label: "Cash",
+      current: cashAvailable,
+      target: (allocationTargets.cash / 100) * targetTotal
+    },
+    {
+      label: "ETF",
+      current: etfValue,
+      target: (allocationTargets.etf / 100) * targetTotal
+    },
+    {
+      label: "Obbligazioni",
+      current: bondValue,
+      target: (allocationTargets.bonds / 100) * targetTotal
+    },
+    {
+      label: "Fondo emergenza",
+      current: emergencyFund,
+      target: (allocationTargets.emergency / 100) * targetTotal
+    }
+  ].map((item) => ({
+    ...item,
+    delta: item.target - item.current
+  }));
+
+  const allocationPercentTotal =
+    allocationTargets.cash +
+    allocationTargets.etf +
+    allocationTargets.bonds +
+    allocationTargets.emergency;
+
+  const getClassTargetTotal = (label: string, fallback: number) => {
+    if (targetTotal <= 0) return fallback;
+    if (label === "ETF") return (allocationTargets.etf / 100) * targetTotal;
+    if (label === "Obbligazioni") return (allocationTargets.bonds / 100) * targetTotal;
+    return fallback;
+  };
+
+  const buildInternalTargets = (items: Holding[]) => {
+    const defined = items
+      .map((item) => targetDrafts[item.id] ?? item.target_pct)
+      .filter((value) => typeof value === "number" && Number.isFinite(value)) as number[];
+    const definedTotal = defined.reduce((sum, value) => sum + value, 0);
+    const undefinedCount = items.length - defined.length;
+    const fallback =
+      undefinedCount > 0 ? Math.max(0, (100 - definedTotal) / undefinedCount) : 0;
+    const entries = items.map((item) => {
+      const raw = targetDrafts[item.id] ?? item.target_pct;
+      const target =
+        typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
+      return { id: item.id, target };
+    });
+    const total = entries.reduce((sum, item) => sum + item.target, 0);
+    return { entries, total };
+  };
+
+  const handleSaveGroupTargets = async (
+    items: Holding[],
+    targetById: Map<string, number>
+  ) => {
+    setTargetMessage(null);
+    if (items.length === 0) return;
+    try {
+      await Promise.all(
+        items.map((item) =>
+          updateHolding(item.id, {
+            target_pct: Number(targetById.get(item.id) ?? 0)
+          })
+        )
+      );
+      await refresh();
+      setTargetDrafts((prev) => {
+        const next = { ...prev };
+        items.forEach((item) => delete next[item.id]);
+        return next;
+      });
+      setTargetMessage("Pesi interni salvati.");
+    } catch (err) {
+      setTargetMessage((err as Error).message);
+    }
+  };
+
   if (loading) {
     return <div className="card">Caricamento portafoglio...</div>;
   }
@@ -185,6 +426,149 @@ const Portfolio = () => {
           <h2 className="section-title">Portafoglio</h2>
           <p className="section-subtitle">Holdings, performance e metriche chiave</p>
         </div>
+      </div>
+
+      <div className="card allocation-card">
+        <div className="section-header">
+          <div>
+            <h3>Asset Allocation Target</h3>
+            <p className="section-subtitle">
+              Imposta le percentuali e ricevi indicazioni per ribilanciare.
+            </p>
+          </div>
+          <div className="allocation-actions">
+            <select
+              className="select"
+              value={rebalanceMonths}
+              onChange={(event) => setRebalanceMonths(Number(event.target.value))}
+            >
+              {[3, 6, 12].map((value) => (
+                <option key={value} value={value}>
+                  Ribilancia ogni {value} mesi
+                </option>
+              ))}
+            </select>
+            <button className="button secondary" type="button" onClick={handleSaveAllocation}>
+              Salva
+            </button>
+          </div>
+        </div>
+
+        <div className="allocation-layout">
+          <div className="allocation-chart">
+            <DonutChart
+              data={allocationData}
+              valueFormatter={(value) => formatCurrencySafe(value, currency)}
+              colors={allocationColors}
+            />
+            <div className="allocation-summary">
+              <div>
+                <span className="stat-label">Totale attuale</span>
+                <strong>{formatCurrencySafe(allocationTotal, currency)}</strong>
+              </div>
+              <div>
+                <span className="stat-label">Fondo emergenza</span>
+                <strong>{formatCurrencySafe(emergencyFund, currency)}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="allocation-controls">
+            {[
+              { key: "cash", label: "Cash", colorKey: "Cash" },
+              { key: "etf", label: "ETF", colorKey: "ETF" },
+              { key: "bonds", label: "Obbligazioni", colorKey: "Obbligazioni" },
+              {
+                key: "emergency",
+                label: "Fondo emergenza",
+                colorKey: "Fondo emergenza"
+              }
+            ].map((item) => (
+              <div className="allocation-row" key={item.key}>
+                <div className="allocation-label">
+                  <input
+                    className="color-input"
+                    type="color"
+                    value={allocationColors[item.colorKey]}
+                    onChange={(event) =>
+                      setAllocationColors((prev) => ({
+                        ...prev,
+                        [item.colorKey]: event.target.value
+                      }))
+                    }
+                    aria-label={`Colore ${item.label}`}
+                  />
+                  <strong>{item.label}</strong>
+                </div>
+                <input
+                  className="allocation-slider"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={allocationTargets[item.key as keyof typeof allocationTargets]}
+                  onChange={(event) =>
+                    handleAllocationChange(
+                      item.key as "cash" | "etf" | "bonds" | "emergency",
+                      Number(event.target.value)
+                    )
+                  }
+                />
+                <span className="allocation-value">
+                  {allocationTargets[item.key as keyof typeof allocationTargets]}%
+                </span>
+              </div>
+            ))}
+            <div className="allocation-total">
+              Totale percentuali: {allocationPercentTotal}%
+            </div>
+            {allocationPercentTotal !== 100 && (
+              <div className="notice">
+                Consiglio: porta il totale al 100% per un ribilanciamento corretto.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="allocation-rebalance">
+          <h4>Azioni consigliate</h4>
+          {allocationTotal === 0 ? (
+            <div className="empty">Inserisci dati per calcolare il ribilanciamento.</div>
+          ) : (
+            <div className="allocation-grid">
+              {allocationGap.map((item) => {
+                const action =
+                  item.delta > 0
+                    ? "Compra"
+                    : item.delta < 0
+                      ? "Vendi"
+                      : "Mantieni";
+                const value = Math.abs(item.delta);
+                const actionClass =
+                  item.delta > 0 ? "buy" : item.delta < 0 ? "sell" : "hold";
+                return (
+                  <div className={`allocation-item ${actionClass}`} key={item.label}>
+                    <div className="allocation-item-header">
+                      <strong>{item.label}</strong>
+                      <div className="allocation-item-meta">
+                        <span>
+                          Target: {formatCurrencySafe(item.target, currency)}
+                        </span>
+                        <span>
+                          Attuale: {formatCurrencySafe(item.current, currency)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className={`allocation-action ${actionClass}`}>
+                      {action} {formatCurrencySafe(value, currency)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {allocationMessage && <div className="notice">{allocationMessage}</div>}
       </div>
 
       <div className="card">
@@ -340,6 +724,15 @@ const Portfolio = () => {
                 group.totalCap > 0 ? group.totalValue / group.totalCap - 1 : Number.NaN;
               const cappedRatio = Math.min(ratio, 2);
               const ratioWidth = (cappedRatio / 2) * 100;
+              const targetModel = buildInternalTargets(group.items);
+              const targetById = new Map(
+                targetModel.entries.map((item) => [item.id, item.target])
+              );
+              const classTargetTotal = getClassTargetTotal(group.label, group.totalValue);
+              const showTargets = group.label !== "Liquidita";
+              const hasTargetDrafts = group.items.some(
+                (item) => targetDrafts[item.id] !== undefined
+              );
               return (
                 <div className="asset-group card" key={group.label}>
                   <div className="asset-group-header">
@@ -369,7 +762,7 @@ const Portfolio = () => {
                     </div>
                   </div>
                   <div className="asset-bar-meta">
-                    <span>Performance (valore vs investito)</span>
+                    <span>Performance (barra 0-200%)</span>
                     <span>{formatPercentSafe(performance)}</span>
                   </div>
                   <div className="asset-bar">
@@ -379,16 +772,6 @@ const Portfolio = () => {
                     </span>
                   </div>
                   <div className="asset-items">
-                    <div className="asset-item asset-item-header">
-                      <span className="asset-item-title">Asset</span>
-                      <div className="asset-item-metrics">
-                        <span>Investito</span>
-                        <span>Valore</span>
-                        <span>Peso</span>
-                        <span>ROI</span>
-                      </div>
-                      <span className="asset-item-actions">Azioni</span>
-                    </div>
                     {group.items.map((item) => {
                       const itemRoi = item.total_cap
                         ? (item.current_value - item.total_cap) / item.total_cap
@@ -413,14 +796,30 @@ const Portfolio = () => {
                             <span className="section-subtitle">{subtitle}</span>
                           </div>
                           <div className="asset-item-metrics">
-                            <span>
-                              {formatCurrencySafe(item.total_cap, item.currency)}
-                            </span>
-                            <span>
-                              {formatCurrencySafe(item.current_value, item.currency)}
-                            </span>
-                            <span>{formatPercentSafe(allocation)}</span>
-                            <span>{formatPercentSafe(itemRoi)}</span>
+                            <div className="asset-item-metric">
+                              <span className="asset-item-label">Investito</span>
+                              <strong className="asset-item-value">
+                                {formatCurrencySafe(item.total_cap, item.currency)}
+                              </strong>
+                            </div>
+                            <div className="asset-item-metric">
+                              <span className="asset-item-label">Valore</span>
+                              <strong className="asset-item-value">
+                                {formatCurrencySafe(item.current_value, item.currency)}
+                              </strong>
+                            </div>
+                            <div className="asset-item-metric">
+                              <span className="asset-item-label">Peso</span>
+                              <strong className="asset-item-value">
+                                {formatPercentSafe(allocation)}
+                              </strong>
+                            </div>
+                            <div className="asset-item-metric">
+                              <span className="asset-item-label">ROI</span>
+                              <strong className="asset-item-value">
+                                {formatPercentSafe(itemRoi)}
+                              </strong>
+                            </div>
                           </div>
                           <div className="asset-item-actions">
                             <button
@@ -450,11 +849,112 @@ const Portfolio = () => {
                       );
                     })}
                   </div>
+                  {showTargets && (
+                    <div className="holding-targets">
+                      <div className="holding-target-header">
+                        <div>
+                          <strong>Pesi interni e azioni consigliate</strong>
+                          <span className="section-subtitle">
+                            {group.label === "ETF" || group.label === "Obbligazioni"
+                              ? `Target classe: ${formatCurrencySafe(
+                                  classTargetTotal,
+                                  currency
+                                )}`
+                              : "Target calcolato sul valore attuale della classe"}
+                          </span>
+                        </div>
+                        <div className="holding-target-actions">
+                          <span className="stat-label">Totale target</span>
+                          <strong>{targetModel.total.toFixed(1)}%</strong>
+                          {hasTargetDrafts && (
+                            <button
+                              className="button secondary small"
+                              type="button"
+                              onClick={() =>
+                                handleSaveGroupTargets(group.items, targetById)
+                              }
+                            >
+                              Salva pesi
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {Math.round(targetModel.total) !== 100 && (
+                        <div className="notice">
+                          Porta il totale al 100% per un bilanciamento interno corretto.
+                        </div>
+                      )}
+                      <div className="holding-target-grid">
+                        {group.items.map((item) => {
+                          const targetPct = targetById.get(item.id) ?? 0;
+                          const currentShare = group.totalValue
+                            ? item.current_value / group.totalValue
+                            : 0;
+                          const targetValue = (classTargetTotal * targetPct) / 100;
+                          const delta = targetValue - item.current_value;
+                          const action =
+                            delta > 0 ? "Compra" : delta < 0 ? "Vendi" : "Mantieni";
+                          const actionClass = delta > 0 ? "buy" : delta < 0 ? "sell" : "hold";
+                          const ticker = extractTicker(item.name) || item.name;
+                          return (
+                            <div
+                              className={`holding-target-card ${actionClass}`}
+                              key={`target-${item.id}`}
+                            >
+                              <div className="holding-target-meta">
+                                <strong>
+                                  {item.emoji ? `${item.emoji} ` : ""}
+                                  {ticker}
+                                </strong>
+                                <span className="section-subtitle">
+                                  {formatPercentSafe(currentShare)} attuale
+                                </span>
+                              </div>
+                              <div className="holding-target-slider">
+                                <input
+                                  className="allocation-slider"
+                                  type="range"
+                                  min="0"
+                                  max="100"
+                                  step="1"
+                                  value={targetPct}
+                                  onChange={(event) =>
+                                    setTargetDrafts((prev) => ({
+                                      ...prev,
+                                      [item.id]: Number(event.target.value)
+                                    }))
+                                  }
+                                />
+                                <span className="holding-target-value">
+                                  {targetPct.toFixed(1)}%
+                                </span>
+                              </div>
+                              <div className="holding-target-values">
+                                <span>
+                                  Target: {formatCurrencySafe(targetValue, currency)}
+                                </span>
+                                <span>
+                                  Attuale: {formatCurrencySafe(
+                                    item.current_value,
+                                    currency
+                                  )}
+                                </span>
+                              </div>
+                              <div className={`holding-action ${actionClass}`}>
+                                {action} {formatCurrencySafe(Math.abs(delta), currency)}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
+        {targetMessage && <div className="notice">{targetMessage}</div>}
       </div>
     </div>
   );

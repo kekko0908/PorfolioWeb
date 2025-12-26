@@ -183,6 +183,7 @@ const Analytics = () => {
             onSelect={
               allocationFocus ? undefined : (label) => setAllocationFocus(label)
             }
+            valueFormatter={(value) => formatCurrencySafe(value, currency)}
           />
         </div>
         <div className="chart-card">

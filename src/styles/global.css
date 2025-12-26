@@ -302,8 +302,10 @@ label {
 }
 
 .stat-value {
-  font-size: 24px;
+  font-size: clamp(20px, 2.4vw, 26px);
   font-weight: 600;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-trend {
@@ -528,6 +530,144 @@ label {
   margin: 6px 0;
 }
 
+.allocation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.allocation-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.allocation-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.allocation-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.allocation-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.allocation-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 56px;
+  gap: 12px;
+  align-items: center;
+}
+
+.allocation-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.color-input {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.allocation-slider {
+  width: 100%;
+}
+
+.allocation-value {
+  font-size: 13px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.allocation-total {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.allocation-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.allocation-rebalance {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.allocation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.allocation-item {
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.allocation-item.buy {
+  background: linear-gradient(135deg, rgba(51, 209, 122, 0.12), rgba(12, 18, 26, 0.9));
+  border-color: rgba(51, 209, 122, 0.35);
+}
+
+.allocation-item.sell {
+  background: linear-gradient(135deg, rgba(240, 91, 91, 0.12), rgba(12, 18, 26, 0.9));
+  border-color: rgba(240, 91, 91, 0.35);
+}
+
+.allocation-item-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.allocation-item-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.allocation-action {
+  font-weight: 600;
+}
+
+.allocation-action.buy {
+  color: var(--success);
+}
+
+.allocation-action.sell {
+  color: var(--danger);
+}
+
+.allocation-action.hold {
+  color: var(--muted);
+}
+
 .category-picker {
   position: relative;
   width: 100%;
@@ -723,10 +863,20 @@ label {
   min-width: 150px;
 }
 
+.calendar-view-toggle {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 8px;
+}
+
+.calendar-grid.year {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .calendar-weekday {
@@ -746,6 +896,10 @@ label {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.calendar-day.year {
+  min-height: 68px;
 }
 
 .calendar-day.empty {
@@ -1209,6 +1363,25 @@ label {
   color: var(--muted);
 }
 
+.asset-item-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.asset-item-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.asset-item-value {
+  font-size: 14px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
 .asset-item-actions {
   display: flex;
   gap: 8px;
@@ -1216,6 +1389,110 @@ label {
 
 .asset-item-header .asset-item-actions {
   justify-content: flex-end;
+}
+
+.holding-targets {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+}
+
+.holding-target-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.holding-target-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.holding-target-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.holding-target-card {
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.holding-target-card.buy {
+  background: linear-gradient(135deg, rgba(51, 209, 122, 0.12), rgba(12, 18, 26, 0.92));
+  border-color: rgba(51, 209, 122, 0.35);
+}
+
+.holding-target-card.sell {
+  background: linear-gradient(135deg, rgba(240, 91, 91, 0.12), rgba(12, 18, 26, 0.92));
+  border-color: rgba(240, 91, 91, 0.35);
+}
+
+.holding-target-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.holding-target-slider {
+  display: grid;
+  grid-template-columns: 1fr 60px;
+  gap: 10px;
+  align-items: center;
+}
+
+.holding-target-value {
+  text-align: right;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.holding-target-values {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.holding-action {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  font-weight: 600;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.holding-action.buy {
+  color: var(--success);
+  background: rgba(51, 209, 122, 0.12);
+  border-color: rgba(51, 209, 122, 0.35);
+}
+
+.holding-action.sell {
+  color: var(--danger);
+  background: rgba(240, 91, 91, 0.12);
+  border-color: rgba(240, 91, 91, 0.35);
+}
+
+.holding-action.hold {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .auth-shell {
@@ -1401,6 +1678,20 @@ label {
     justify-content: flex-start;
   }
 
+  .holding-target-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .holding-target-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .holding-target-grid {
+    grid-template-columns: 1fr;
+  }
+
   .asset-item-header {
     display: none;
   }
@@ -1413,6 +1704,25 @@ label {
   .account-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .allocation-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .allocation-row {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  .allocation-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .allocation-summary {
+    grid-template-columns: 1fr;
   }
 
   .goal-header {

@@ -9,7 +9,6 @@ import {
   updateCategory,
   updateGoal
 } from "../lib/api";
-import { buildAccountBalances } from "../lib/metrics";
 import { formatCurrencySafe, formatRatio } from "../lib/format";
 import type { CategoryType, Goal } from "../types";
 
@@ -19,35 +18,18 @@ const goalCategoryType: CategoryType = "expense";
 const emptyForm = {
   title: "",
   emoji: "",
-  account_id: "",
   target_amount: "",
   due_date: ""
 };
 
 const Goals = () => {
-  const { accounts, categories, goals, transactions, refresh, loading, error } =
+  const { categories, goals, transactions, settings, refresh, loading, error } =
     usePortfolioData();
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Goal | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-
-  const accountBalances = buildAccountBalances(accounts, transactions);
-  const accountMap = useMemo(
-    () =>
-      new Map(
-        accountBalances.map((account) => [
-          account.id,
-          {
-            name: account.name,
-            emoji: account.emoji ?? "",
-            currency: account.currency,
-            balance: account.balance
-          }
-        ])
-      ),
-    [accountBalances]
-  );
+  const currency = settings?.base_currency ?? "EUR";
 
   const ensureGoalParent = async () => {
     const existing = categories.find(
@@ -104,10 +86,6 @@ const Goals = () => {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage(null);
-    if (!form.account_id) {
-      setMessage("Seleziona un conto.");
-      return;
-    }
     const targetAmount = Number(form.target_amount);
     if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
       setMessage("Inserisci un importo obiettivo valido.");
@@ -126,7 +104,6 @@ const Goals = () => {
       }
       const childId = await ensureGoalChild(form.title.trim(), parentId);
       const payload = {
-        account_id: form.account_id,
         category_id: childId,
         title: form.title.trim(),
         emoji: form.emoji.trim() || null,
@@ -156,7 +133,6 @@ const Goals = () => {
     setForm({
       title: item.title,
       emoji: item.emoji ?? "",
-      account_id: item.account_id,
       target_amount: String(item.target_amount),
       due_date: item.due_date
     });
@@ -177,9 +153,10 @@ const Goals = () => {
   const goalsWithStats = useMemo(() => {
     const now = new Date();
     return goals.map((goal) => {
-      const account = accountMap.get(goal.account_id);
-      const balance = account?.balance ?? 0;
-      const remaining = Math.max(goal.target_amount - balance, 0);
+      const contributions = transactions
+        .filter((item) => item.category_id === goal.category_id && item.flow === "out")
+        .reduce((sum, item) => sum + item.amount, 0);
+      const remaining = Math.max(goal.target_amount - contributions, 0);
       const due = new Date(goal.due_date);
       const diffMs = due.getTime() - now.getTime();
       const daysLeft = Math.max(Math.ceil(diffMs / (1000 * 60 * 60 * 24)), 0);
@@ -188,12 +165,11 @@ const Goals = () => {
       const perMonth = monthsLeft > 0 ? remaining / monthsLeft : 0;
       const progress =
         goal.target_amount > 0
-          ? Math.min(balance / goal.target_amount, 1)
+          ? Math.min(contributions / goal.target_amount, 1)
           : 0;
       return {
         ...goal,
-        account,
-        balance,
+        contributions,
         remaining,
         daysLeft,
         monthsLeft,
@@ -202,7 +178,7 @@ const Goals = () => {
         progress
       };
     });
-  }, [goals, accountMap]);
+  }, [goals, transactions]);
 
   if (loading) {
     return <div className="card">Caricamento obiettivi...</div>;
@@ -243,22 +219,6 @@ const Goals = () => {
               value={form.emoji}
               onChange={(event) => setForm({ ...form, emoji: event.target.value })}
             />
-            <select
-              className="select"
-              value={form.account_id}
-              onChange={(event) =>
-                setForm({ ...form, account_id: event.target.value })
-              }
-              required
-            >
-              <option value="">Seleziona conto</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.emoji ? `${account.emoji} ` : ""}
-                  {account.name}
-                </option>
-              ))}
-            </select>
             <input
               className="input"
               type="number"
@@ -292,11 +252,6 @@ const Goals = () => {
               )}
             </div>
           </form>
-          {accounts.length === 0 && (
-            <div className="notice" style={{ marginTop: "12px" }}>
-              Crea prima un conto in Impostazioni.
-            </div>
-          )}
         </div>
       )}
 
@@ -308,9 +263,9 @@ const Goals = () => {
       ) : (
         <div className="goal-grid">
           {goalsWithStats.map((goal) => {
-            const currency = goal.account?.currency ?? "EUR";
+            const currency = settings?.base_currency ?? "EUR";
             const status =
-              goal.balance >= goal.target_amount ? "Raggiunto" : "In corso";
+              goal.contributions >= goal.target_amount ? "Raggiunto" : "In corso";
             return (
               <div className="goal-card" key={goal.id}>
                 <div className="goal-header">
@@ -319,10 +274,7 @@ const Goals = () => {
                       {goal.emoji ? `${goal.emoji} ` : ""}
                       {goal.title}
                     </strong>
-                    <span className="section-subtitle">
-                      {goal.account?.emoji ? `${goal.account.emoji} ` : ""}
-                      {goal.account?.name ?? "Conto"}
-                    </span>
+                    <span className="section-subtitle">Categoria Obiettivi</span>
                   </div>
                   <span className="goal-status">{status}</span>
                 </div>
@@ -338,8 +290,8 @@ const Goals = () => {
                     <strong>{formatCurrencySafe(goal.target_amount, currency)}</strong>
                   </div>
                   <div className="goal-metric">
-                    <span>Saldo</span>
-                    <strong>{formatCurrencySafe(goal.balance, currency)}</strong>
+                    <span>Versato</span>
+                    <strong>{formatCurrencySafe(goal.contributions, currency)}</strong>
                   </div>
                   <div className="goal-metric">
                     <span>Residuo</span>

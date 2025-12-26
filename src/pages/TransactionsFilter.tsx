@@ -8,6 +8,40 @@ import type { Category, TransactionType } from "../types";
 const weekdayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 
 type CategoryWithChildren = Category & { children: Category[] };
+type CalendarView = "month" | "week" | "year";
+type CalendarDay = { label: string; key: string };
+
+const formatDateKey = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+
+const getISOWeek = (date: Date) => {
+  const temp = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = temp.getUTCDay() || 7;
+  temp.setUTCDate(temp.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(temp.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((temp.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return { year: temp.getUTCFullYear(), week: weekNo };
+};
+
+const formatWeekInput = (date: Date) => {
+  const { year, week } = getISOWeek(date);
+  return `${year}-W${String(week).padStart(2, "0")}`;
+};
+
+const getWeekStart = (weekValue: string) => {
+  const match = weekValue.match(/^(\d{4})-W(\d{2})$/);
+  if (!match) return new Date();
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  const simple = new Date(year, 0, 1 + (week - 1) * 7);
+  const day = simple.getDay();
+  const diff = day <= 4 ? 1 - day : 8 - day;
+  const monday = new Date(simple);
+  monday.setDate(simple.getDate() + diff);
+  return monday;
+};
 
 const TransactionsFilter = () => {
   const { accounts, categories, transactions, settings, refresh, loading, error } =
@@ -18,10 +52,15 @@ const TransactionsFilter = () => {
   const [filterStart, setFilterStart] = useState("");
   const [filterEnd, setFilterEnd] = useState("");
   const [filterQuery, setFilterQuery] = useState("");
+  const [calendarView, setCalendarView] = useState<CalendarView>("month");
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
+  const [calendarWeek, setCalendarWeek] = useState(() => formatWeekInput(new Date()));
+  const [calendarYear, setCalendarYear] = useState(
+    () => String(new Date().getFullYear())
+  );
 
   const currency = settings?.base_currency ?? "EUR";
 
@@ -76,7 +115,7 @@ const TransactionsFilter = () => {
     categoryMap
   ]);
 
-  const calendarMeta = useMemo(() => {
+  const monthMeta = useMemo(() => {
     const [yearRaw, monthRaw] = calendarMonth.split("-");
     const year = Number(yearRaw);
     const monthIndex = Number(monthRaw) - 1;
@@ -92,38 +131,104 @@ const TransactionsFilter = () => {
     };
   }, [calendarMonth]);
 
+  const weekMeta = useMemo(() => {
+    const weekStart = getWeekStart(calendarWeek);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    const weekNumber = calendarWeek.split("-W")[1] ?? "";
+    const rangeFormatter = new Intl.DateTimeFormat("it-IT", {
+      day: "2-digit",
+      month: "short"
+    });
+    const label = `Settimana ${weekNumber} - ${rangeFormatter.format(
+      weekStart
+    )} / ${rangeFormatter.format(weekEnd)}`;
+    return {
+      weekStart,
+      weekEnd,
+      weekStartKey: formatDateKey(weekStart),
+      weekEndKey: formatDateKey(weekEnd),
+      label
+    };
+  }, [calendarWeek]);
+
+  const yearMeta = useMemo(() => {
+    const yearValue = Number(calendarYear);
+    const safeYear =
+      Number.isFinite(yearValue) && calendarYear !== ""
+        ? yearValue
+        : new Date().getFullYear();
+    return {
+      year: safeYear,
+      label: `Anno ${safeYear}`
+    };
+  }, [calendarYear]);
+
+  const calendarLabel =
+    calendarView === "month"
+      ? monthMeta.monthLabel
+      : calendarView === "week"
+        ? weekMeta.label
+        : yearMeta.label;
+
   const calendarDays = useMemo(() => {
-    const firstDay = new Date(calendarMeta.year, calendarMeta.monthIndex, 1);
+    if (calendarView === "year") {
+      const formatter = new Intl.DateTimeFormat("it-IT", { month: "short" });
+      return Array.from({ length: 12 }, (_, index) => {
+        const month = String(index + 1).padStart(2, "0");
+        const date = new Date(yearMeta.year, index, 1);
+        return {
+          label: formatter.format(date),
+          key: `${yearMeta.year}-${month}`
+        };
+      });
+    }
+    if (calendarView === "week") {
+      return Array.from({ length: 7 }, (_, index) => {
+        const date = new Date(weekMeta.weekStart);
+        date.setDate(weekMeta.weekStart.getDate() + index);
+        return {
+          label: String(date.getDate()),
+          key: formatDateKey(date)
+        };
+      });
+    }
+    const firstDay = new Date(monthMeta.year, monthMeta.monthIndex, 1);
     const startOffset = (firstDay.getDay() + 6) % 7;
-    const daysInMonth = new Date(
-      calendarMeta.year,
-      calendarMeta.monthIndex + 1,
-      0
-    ).getDate();
-    const days: Array<{ label: number; key: string } | null> = [];
+    const daysInMonth = new Date(monthMeta.year, monthMeta.monthIndex + 1, 0).getDate();
+    const days: Array<CalendarDay | null> = [];
     for (let i = 0; i < startOffset; i += 1) days.push(null);
     for (let day = 1; day <= daysInMonth; day += 1) {
-      const key = `${calendarMeta.year}-${calendarMeta.monthStr}-${String(day).padStart(2, "0")}`;
-      days.push({ label: day, key });
+      const key = `${monthMeta.year}-${monthMeta.monthStr}-${String(day).padStart(2, "0")}`;
+      days.push({ label: String(day), key });
     }
     return days;
-  }, [calendarMeta]);
+  }, [calendarView, monthMeta, weekMeta, yearMeta]);
 
   const calendarTotals = useMemo(() => {
     const totals = new Map<string, { income: number; expense: number }>();
     filteredTransactions.forEach((item) => {
-      if (!item.date.startsWith(`${calendarMeta.year}-${calendarMeta.monthStr}`)) {
+      if (calendarView === "month") {
+        if (!item.date.startsWith(`${monthMeta.year}-${monthMeta.monthStr}`)) {
+          return;
+        }
+      } else if (calendarView === "week") {
+        if (item.date < weekMeta.weekStartKey || item.date > weekMeta.weekEndKey) {
+          return;
+        }
+      } else if (!item.date.startsWith(`${yearMeta.year}-`)) {
         return;
       }
-      const current = totals.get(item.date) ?? { income: 0, expense: 0 };
+      const key = calendarView === "year" ? item.date.slice(0, 7) : item.date;
+      const current = totals.get(key) ?? { income: 0, expense: 0 };
       if (item.type === "income") current.income += item.amount;
       if (item.type === "expense") current.expense += item.amount;
-      totals.set(item.date, current);
+      totals.set(key, current);
     });
     return totals;
-  }, [filteredTransactions, calendarMeta]);
+  }, [filteredTransactions, calendarView, monthMeta, weekMeta, yearMeta]);
 
-  const monthSummary = useMemo(() => {
+  const calendarSummary = useMemo(() => {
     let income = 0;
     let expense = 0;
     calendarTotals.forEach((value) => {
@@ -137,11 +242,22 @@ const TransactionsFilter = () => {
     setFilterCategory("all");
   }, [filterType]);
 
-  const shiftMonth = (delta: number) => {
-    const date = new Date(calendarMeta.year, calendarMeta.monthIndex + delta, 1);
-    setCalendarMonth(
-      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    );
+  const shiftCalendar = (delta: number) => {
+    if (calendarView === "month") {
+      const date = new Date(monthMeta.year, monthMeta.monthIndex + delta, 1);
+      setCalendarMonth(
+        `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+      );
+      return;
+    }
+    if (calendarView === "week") {
+      const date = new Date(weekMeta.weekStart);
+      date.setDate(weekMeta.weekStart.getDate() + delta * 7);
+      setCalendarWeek(formatWeekInput(date));
+      return;
+    }
+    const nextYear = yearMeta.year + delta;
+    setCalendarYear(String(nextYear));
   };
 
   const resetFilters = () => {
@@ -193,62 +309,104 @@ const TransactionsFilter = () => {
             <button
               className="button ghost small"
               type="button"
-              onClick={() => shiftMonth(-1)}
+              onClick={() => shiftCalendar(-1)}
             >
               {"<"}
             </button>
             <div className="calendar-title">
-              <strong>{calendarMeta.monthLabel}</strong>
+              <strong>{calendarLabel}</strong>
               <div className="calendar-summary">
                 <span className="calendar-income">
-                  +{formatCurrency(monthSummary.income, currency)}
+                  +{formatCurrency(calendarSummary.income, currency)}
                 </span>
                 <span className="calendar-expense">
-                  -{formatCurrency(monthSummary.expense, currency)}
+                  -{formatCurrency(calendarSummary.expense, currency)}
                 </span>
               </div>
             </div>
             <div className="calendar-actions">
-              <input
-                className="input"
-                type="month"
-                value={calendarMonth}
-                onChange={(event) => setCalendarMonth(event.target.value)}
-              />
+              <div className="calendar-view-toggle">
+                {[
+                  { key: "month", label: "Mese" },
+                  { key: "week", label: "Settimana" },
+                  { key: "year", label: "Anno" }
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className={`filter-chip ${
+                      calendarView === item.key ? "active" : ""
+                    }`}
+                    onClick={() => setCalendarView(item.key as CalendarView)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {calendarView === "month" && (
+                <input
+                  className="input"
+                  type="month"
+                  value={calendarMonth}
+                  onChange={(event) => setCalendarMonth(event.target.value)}
+                />
+              )}
+              {calendarView === "week" && (
+                <input
+                  className="input"
+                  type="week"
+                  value={calendarWeek}
+                  onChange={(event) => setCalendarWeek(event.target.value)}
+                />
+              )}
+              {calendarView === "year" && (
+                <input
+                  className="input"
+                  type="number"
+                  min="2000"
+                  max="2100"
+                  value={calendarYear}
+                  onChange={(event) => setCalendarYear(event.target.value)}
+                />
+              )}
               <button
                 className="button ghost small"
                 type="button"
-                onClick={() => shiftMonth(1)}
+                onClick={() => shiftCalendar(1)}
               >
                 {">"}
               </button>
             </div>
           </div>
 
-          <div className="calendar-grid">
-            {weekdayLabels.map((label) => (
-              <div className="calendar-weekday" key={label}>
-                {label}
-              </div>
-            ))}
+          <div className={`calendar-grid ${calendarView}`}>
+            {calendarView !== "year" &&
+              weekdayLabels.map((label) => (
+                <div className="calendar-weekday" key={label}>
+                  {label}
+                </div>
+              ))}
             {calendarDays.map((day, index) => {
               if (!day) {
                 return <div className="calendar-day empty" key={`empty-${index}`} />;
               }
               const totals = calendarTotals.get(day.key);
               return (
-                <div className="calendar-day" key={day.key}>
+                <div
+                  className={`calendar-day ${calendarView === "year" ? "year" : ""}`}
+                  key={day.key}
+                >
                   <span className="calendar-date">{day.label}</span>
                   <div className="calendar-values">
                     <span className="calendar-income">
                       {totals?.income
                         ? `+${formatCurrency(totals.income, currency)}`
-                        : "n/d"}
+                        : "-"}
                     </span>
                     <span className="calendar-expense">
                       {totals?.expense
                         ? `-${formatCurrency(totals.expense, currency)}`
-                        : "n/d"}
+                        : "-"}
                     </span>
                   </div>
                 </div>
