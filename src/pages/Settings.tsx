@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
@@ -10,6 +10,7 @@ import {
   updateAccount,
   upsertSettings
 } from "../lib/api";
+import { supabase } from "../lib/supabaseClient";
 import type { Account, AccountType, TransactionType } from "../types";
 
 const accountTypes: { value: AccountType; label: string }[] = [
@@ -38,6 +39,31 @@ const accountTypeLabels: Record<string, string> = {
   other: "Altro"
 };
 
+const dicebearStyles = [
+  { value: "adventurer", label: "Adventurer" },
+  { value: "avataaars", label: "Avataaars" },
+  { value: "bottts", label: "Bottts" },
+  { value: "croodles", label: "Croodles" }
+];
+
+const defaultDicebearSeeds = [
+  "Luna",
+  "Milo",
+  "Nova",
+  "Axel",
+  "Iris",
+  "Leo",
+  "Nora",
+  "Zoe",
+  "Kai",
+  "Enea",
+  "Maya",
+  "Sole"
+];
+
+const avatarFavoritesKey = "profile_avatar_favorites_v1";
+const avatarRecentKey = "profile_avatar_recent_v1";
+
 const Settings = () => {
   const { session } = useAuth();
   const { accounts, categories, transactions, holdings, settings, refresh, loading, error } =
@@ -48,6 +74,20 @@ const Settings = () => {
   const [accountForm, setAccountForm] = useState(emptyAccountForm);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarStyle, setAvatarStyle] = useState("adventurer");
+  const [customSeed, setCustomSeed] = useState("");
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [emailMessage, setEmailMessage] = useState<string | null>(null);
+  const [passwordDraft, setPasswordDraft] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [favoriteAvatars, setFavoriteAvatars] = useState<string[]>([]);
+  const [recentAvatars, setRecentAvatars] = useState<string[]>([]);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [recentsOpen, setRecentsOpen] = useState(false);
 
   const isSystemAccount = (account: Account) =>
     /emergenza|emergency/i.test(account.name);
@@ -87,6 +127,30 @@ const Settings = () => {
   }, [settings]);
 
   useEffect(() => {
+    const loadList = (key: string) => {
+      if (typeof localStorage === "undefined") return [];
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+      } catch {
+        return [];
+      }
+    };
+    setFavoriteAvatars(loadList(avatarFavoritesKey));
+    setRecentAvatars(loadList(avatarRecentKey));
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user) return;
+    const metadata = session.user.user_metadata ?? {};
+    setDisplayName(typeof metadata.display_name === "string" ? metadata.display_name : "");
+    setAvatarUrl(typeof metadata.avatar_url === "string" ? metadata.avatar_url : "");
+    setEmailDraft(session.user.email ?? "");
+  }, [session]);
+
+  useEffect(() => {
     if (editingAccount) return;
     setAccountForm((prev) => ({
       ...prev,
@@ -110,6 +174,149 @@ const Settings = () => {
     } catch (err) {
       setMessage((err as Error).message);
     }
+  };
+
+  const handleProfileSave = async (event: FormEvent) => {
+    event.preventDefault();
+    setProfileMessage(null);
+    if (!session) return;
+    try {
+      const payload = {
+        display_name: displayName.trim() || null,
+        avatar_url: avatarUrl.trim() || null
+      };
+      const { error } = await supabase.auth.updateUser({ data: payload });
+      if (error) throw error;
+      if (avatarUrl.trim()) {
+        pushRecentAvatar(avatarUrl.trim());
+      }
+      setProfileMessage("Profilo aggiornato.");
+    } catch (err) {
+      setProfileMessage((err as Error).message);
+    }
+  };
+
+  const handleEmailUpdate = async (event: FormEvent) => {
+    event.preventDefault();
+    setEmailMessage(null);
+    if (!session) return;
+    const nextEmail = emailDraft.trim();
+    if (!nextEmail) {
+      setEmailMessage("Inserisci una email valida.");
+      return;
+    }
+    try {
+      const { error } = await supabase.auth.updateUser({ email: nextEmail });
+      if (error) throw error;
+      setEmailMessage("Email aggiornata. Controlla la posta per confermare.");
+    } catch (err) {
+      setEmailMessage((err as Error).message);
+    }
+  };
+
+  const handlePasswordUpdate = async (event: FormEvent) => {
+    event.preventDefault();
+    setPasswordMessage(null);
+    if (!session) return;
+    if (!passwordDraft || passwordDraft.length < 6) {
+      setPasswordMessage("La password deve avere almeno 6 caratteri.");
+      return;
+    }
+    if (passwordDraft !== passwordConfirm) {
+      setPasswordMessage("Le password non coincidono.");
+      return;
+    }
+    try {
+      const { error } = await supabase.auth.updateUser({ password: passwordDraft });
+      if (error) throw error;
+      setPasswordDraft("");
+      setPasswordConfirm("");
+      setPasswordMessage("Password aggiornata.");
+    } catch (err) {
+      setPasswordMessage((err as Error).message);
+    }
+  };
+
+  const handleAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (result) {
+        setAvatarUrl(result);
+        pushRecentAvatar(result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const buildDicebearUrl = (style: string, seed: string) =>
+    `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(seed)}`;
+
+  const dicebearSeeds = useMemo(() => {
+    const emailSeed = emailDraft.split("@")[0] ?? "";
+    const preferredSeed = displayName.trim() || emailSeed.trim();
+    const seeds = preferredSeed ? [preferredSeed, ...defaultDicebearSeeds] : defaultDicebearSeeds;
+    return Array.from(new Set(seeds.filter((seed) => seed))).slice(0, 12);
+  }, [displayName, emailDraft]);
+
+  const getAvatarLabel = (url: string, fallback: string) => {
+    const seedMatch = url.match(/[?&]seed=([^&]+)/);
+    if (seedMatch && seedMatch[1]) {
+      try {
+        return decodeURIComponent(seedMatch[1]);
+      } catch {
+        return seedMatch[1];
+      }
+    }
+    return fallback;
+  };
+
+  const pushRecentAvatar = (url: string) => {
+    if (!url) return;
+    setRecentAvatars((prev) => {
+      const next = [url, ...prev.filter((item) => item !== url)].slice(0, 12);
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(avatarRecentKey, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  const toggleFavoriteAvatar = (url: string) => {
+    if (!url) return;
+    setFavoriteAvatars((prev) => {
+      const exists = prev.includes(url);
+      const next = exists
+        ? prev.filter((item) => item !== url)
+        : [url, ...prev].slice(0, 12);
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(avatarFavoritesKey, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  const handleAvatarPick = (seed: string) => {
+    const url = buildDicebearUrl(avatarStyle, seed);
+    setAvatarUrl(url);
+    pushRecentAvatar(url);
+  };
+
+  const handleCustomSeed = () => {
+    const seed = customSeed.trim();
+    if (!seed) return;
+    const url = buildDicebearUrl(avatarStyle, seed);
+    setAvatarUrl(url);
+    pushRecentAvatar(url);
+  };
+
+  const handleRandomSeed = () => {
+    const seed = `user-${Math.random().toString(36).slice(2, 7)}`;
+    const url = buildDicebearUrl(avatarStyle, seed);
+    setAvatarUrl(url);
+    pushRecentAvatar(url);
   };
 
   const resetAccountForm = () => {
@@ -433,6 +640,313 @@ const Settings = () => {
         <div>
           <h2 className="section-title">Impostazioni</h2>
           <p className="section-subtitle">Valute e configurazioni chiave</p>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="section-header">
+          <div>
+            <h3>Profilo</h3>
+            <p className="section-subtitle">
+              Gestisci avatar, nome utente, email e password.
+            </p>
+          </div>
+        </div>
+        <form className="profile-grid" onSubmit={handleProfileSave}>
+          <div className="profile-avatar">
+            {avatarUrl ? (
+              <img className="profile-avatar-img" src={avatarUrl} alt="Avatar" />
+            ) : (
+              <div className="profile-avatar-placeholder">?</div>
+            )}
+            <input
+              className="input"
+              type="file"
+              accept="image/*"
+              onChange={handleAvatarFile}
+            />
+          </div>
+          <div className="profile-fields">
+            <input
+              className="input"
+              placeholder="Nome visualizzato"
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+            />
+            <input
+              className="input"
+              placeholder="Avatar URL"
+              value={avatarUrl}
+              onChange={(event) => setAvatarUrl(event.target.value)}
+            />
+            <button className="button" type="submit">
+              Salva profilo
+            </button>
+          </div>
+        </form>
+        {profileMessage && <div className="notice">{profileMessage}</div>}
+        <div className="profile-avatar-picker">
+          <div className="profile-picker-header">
+            <div>
+              <strong>Avatar DiceBear</strong>
+              <span className="section-subtitle">
+                Scegli uno stile e un seed.
+              </span>
+            </div>
+            <select
+              className="select"
+              value={avatarStyle}
+              onChange={(event) => setAvatarStyle(event.target.value)}
+            >
+              {dicebearStyles.map((style) => (
+                <option key={style.value} value={style.value}>
+                  {style.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="profile-picker-controls">
+            <input
+              className="input"
+              placeholder="Seed personalizzato"
+              value={customSeed}
+              onChange={(event) => setCustomSeed(event.target.value)}
+            />
+            <button className="button secondary" type="button" onClick={handleCustomSeed}>
+              Usa seed
+            </button>
+            <button className="button ghost" type="button" onClick={handleRandomSeed}>
+              Random
+            </button>
+            <div className="profile-fav-strip">
+              <span className="profile-fav-label">Preferiti</span>
+              <div className="profile-fav-list">
+                {favoriteAvatars.length === 0 ? (
+                  <span className="section-subtitle">Nessuno</span>
+                ) : (
+                  favoriteAvatars.slice(0, 4).map((url, index) => (
+                    <div
+                      className={`avatar-option compact${
+                        avatarUrl === url ? " active" : ""
+                      }`}
+                      key={`fav-mini-${url}-${index}`}
+                    >
+                      <button
+                        className="avatar-select"
+                        type="button"
+                        onClick={() => {
+                          setAvatarUrl(url);
+                          pushRecentAvatar(url);
+                        }}
+                      >
+                        <img src={url} alt="Avatar preferito" loading="lazy" />
+                        <span>Pref</span>
+                      </button>
+                      <button
+                        className="avatar-fav active"
+                        type="button"
+                        onClick={() => toggleFavoriteAvatar(url)}
+                        aria-label="Rimuovi dai preferiti"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="avatar-grid">
+            {dicebearSeeds.map((seed) => {
+              const url = buildDicebearUrl(avatarStyle, seed);
+              const isActive = avatarUrl === url;
+              const isFavorite = favoriteAvatars.includes(url);
+              return (
+                <div
+                  className={`avatar-option${isActive ? " active" : ""}`}
+                  key={`seed-${seed}`}
+                >
+                  <button
+                    className="avatar-select"
+                    type="button"
+                    onClick={() => handleAvatarPick(seed)}
+                  >
+                    <img src={url} alt={`Avatar ${seed}`} loading="lazy" />
+                    <span>{seed}</span>
+                  </button>
+                  <button
+                    className={`avatar-fav${isFavorite ? " active" : ""}`}
+                    type="button"
+                    onClick={() => toggleFavoriteAvatar(url)}
+                    aria-label={
+                      isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
+                    }
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {favoriteAvatars.length > 0 && (
+            <div className="avatar-section">
+              <div className="avatar-section-header">
+                <div>
+                  <strong>Preferiti</strong>
+                  <span className="section-subtitle">I tuoi avatar salvati.</span>
+                </div>
+                <button
+                  className="button ghost small"
+                  type="button"
+                  onClick={() => setFavoritesOpen((prev) => !prev)}
+                >
+                  {favoritesOpen ? "Nascondi" : "Mostra"} ({favoriteAvatars.length})
+                </button>
+              </div>
+              {favoritesOpen && (
+                <div className="avatar-grid compact">
+                  {favoriteAvatars.map((url, index) => {
+                    const isActive = avatarUrl === url;
+                    return (
+                      <div
+                        className={`avatar-option compact${isActive ? " active" : ""}`}
+                        key={`favorite-${url}-${index}`}
+                      >
+                        <button
+                          className="avatar-select"
+                          type="button"
+                          onClick={() => {
+                            setAvatarUrl(url);
+                            pushRecentAvatar(url);
+                          }}
+                        >
+                          <img src={url} alt="Avatar preferito" loading="lazy" />
+                          <span>{getAvatarLabel(url, "Preferito")}</span>
+                        </button>
+                        <button
+                          className="avatar-fav active"
+                          type="button"
+                          onClick={() => toggleFavoriteAvatar(url)}
+                          aria-label="Rimuovi dai preferiti"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+          {recentAvatars.length > 0 && (
+            <div className="avatar-section">
+              <div className="avatar-section-header">
+                <div>
+                  <strong>Ultimi aggiunti</strong>
+                  <span className="section-subtitle">Selezioni recenti.</span>
+                </div>
+                <button
+                  className="button ghost small"
+                  type="button"
+                  onClick={() => setRecentsOpen((prev) => !prev)}
+                >
+                  {recentsOpen ? "Nascondi" : "Mostra"} ({recentAvatars.length})
+                </button>
+              </div>
+              {recentsOpen && (
+                <div className="avatar-grid compact">
+                  {recentAvatars.map((url, index) => {
+                    const isActive = avatarUrl === url;
+                    const isFavorite = favoriteAvatars.includes(url);
+                    return (
+                      <div
+                        className={`avatar-option compact${isActive ? " active" : ""}`}
+                        key={`recent-${url}-${index}`}
+                      >
+                        <button
+                          className="avatar-select"
+                          type="button"
+                          onClick={() => setAvatarUrl(url)}
+                        >
+                          <img src={url} alt="Avatar recente" loading="lazy" />
+                          <span>{getAvatarLabel(url, "Recente")}</span>
+                        </button>
+                        <button
+                          className={`avatar-fav${isFavorite ? " active" : ""}`}
+                          type="button"
+                          onClick={() => toggleFavoriteAvatar(url)}
+                          aria-label={
+                            isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
+                          }
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+          <span className="section-subtitle">
+            Puoi anche incollare un URL o caricare una foto.
+          </span>
+        </div>
+        <div className="profile-actions">
+          <form className="profile-form" onSubmit={handleEmailUpdate}>
+            <label className="profile-label">Email</label>
+            <div className="profile-row">
+              <input
+                className="input"
+                type="email"
+                value={emailDraft}
+                onChange={(event) => setEmailDraft(event.target.value)}
+              />
+              <button className="button secondary" type="submit">
+                Aggiorna
+              </button>
+            </div>
+          </form>
+          {emailMessage && <div className="notice">{emailMessage}</div>}
+          <form className="profile-form" onSubmit={handlePasswordUpdate}>
+            <label className="profile-label">Password</label>
+            <div className="profile-row">
+              <input
+                className="input"
+                type="password"
+                placeholder="Nuova password"
+                value={passwordDraft}
+                onChange={(event) => setPasswordDraft(event.target.value)}
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="Conferma password"
+                value={passwordConfirm}
+                onChange={(event) => setPasswordConfirm(event.target.value)}
+              />
+              <button className="button secondary" type="submit">
+                Aggiorna
+              </button>
+            </div>
+          </form>
+          {passwordMessage && <div className="notice">{passwordMessage}</div>}
         </div>
       </div>
 

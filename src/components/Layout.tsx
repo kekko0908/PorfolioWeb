@@ -29,6 +29,12 @@ const maskEmail = (email?: string) => {
 
 export const Layout = () => {
   const { session, signOut } = useAuth();
+  const metadata = session?.user.user_metadata ?? {};
+  const avatarUrl = typeof metadata.avatar_url === "string" ? metadata.avatar_url : "";
+  const displayName =
+    typeof metadata.display_name === "string" && metadata.display_name.trim()
+      ? metadata.display_name
+      : maskEmail(session?.user.email);
 
   return (
     <div className="app-shell">
@@ -75,9 +81,14 @@ export const Layout = () => {
       </aside>
       <div className="content">
         <header className="topbar">
-          <div>
-            <strong>{maskEmail(session?.user.email)}</strong>
-            <div className="pill">EUR / USD</div>
+          <div className="topbar-user">
+            {avatarUrl ? (
+              <img className="user-avatar" src={avatarUrl} alt="Avatar utente" />
+            ) : null}
+            <div>
+              <strong>{displayName}</strong>
+              <div className="pill">EUR / USD</div>
+            </div>
           </div>
           <div className="topbar-actions">
             <button className="button secondary" onClick={signOut}>

@@ -31,13 +31,6 @@ const iconByName: Record<string, string> = {
   "Disinvestimenti (Output Capitale)": "\u{1F4C9}"
 };
 
-const transactionTypeLabels: Record<TransactionType, string> = {
-  income: "Entrata",
-  expense: "Uscita",
-  investment: "Investimento",
-  transfer: "Trasferimento"
-};
-
 type CategoryWithChildren = Category & { children: Category[] };
 
 const emptyForm = {
