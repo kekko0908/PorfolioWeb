@@ -49,6 +49,9 @@ const Settings = () => {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
 
+  const isSystemAccount = (account: Account) =>
+    /emergenza|emergency/i.test(account.name);
+
   const normalizeKey = (value: string) =>
     value
       .toLowerCase()
@@ -117,8 +120,9 @@ const Settings = () => {
   const handleAccountSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setAccountMessage(null);
+    const isEditingSystem = editingAccount ? isSystemAccount(editingAccount) : false;
     const payload = {
-      name: accountForm.name.trim(),
+      name: isEditingSystem ? editingAccount?.name ?? "" : accountForm.name.trim(),
       type: accountForm.type,
       emoji: accountForm.emoji.trim() || null,
       currency: accountForm.currency as "EUR" | "USD",
@@ -152,6 +156,11 @@ const Settings = () => {
 
   const removeAccount = async (id: string) => {
     setAccountMessage(null);
+    const account = accounts.find((item) => item.id === id);
+    if (account && isSystemAccount(account)) {
+      setAccountMessage("Non puoi eliminare i conti di sistema.");
+      return;
+    }
     try {
       await deleteAccount(id);
       await refresh();
@@ -460,6 +469,7 @@ const Settings = () => {
             onChange={(event) =>
               setAccountForm({ ...accountForm, name: event.target.value })
             }
+            disabled={editingAccount ? isSystemAccount(editingAccount) : false}
             required
           />
           <select
@@ -523,39 +533,90 @@ const Settings = () => {
         {accounts.length === 0 ? (
           <div className="empty">Nessun conto creato.</div>
         ) : (
-          <div className="account-grid" style={{ marginTop: "16px" }}>
-            {accounts.map((account) => (
-              <div className="account-card" key={account.id}>
-                <div className="account-meta">
-                  <span className="account-emoji">
-                    {account.emoji && account.emoji.trim() ? account.emoji : "O"}
-                  </span>
-                  <div className="account-info">
-                    <strong>{account.name}</strong>
-                    <span className="section-subtitle">
-                      {accountTypeLabels[account.type] ?? account.type}
-                    </span>
+          <>
+            {accounts.some((account) => isSystemAccount(account)) && (
+              <div className="account-section">
+                <div className="section-header">
+                  <div>
+                    <h4>Sistema</h4>
+                    <p className="section-subtitle">Conti predefiniti del sistema</p>
                   </div>
                 </div>
-                <div className="account-actions">
-                  <button
-                    className="button ghost small"
-                    type="button"
-                    onClick={() => startAccountEdit(account)}
-                  >
-                    Modifica
-                  </button>
-                  <button
-                    className="button ghost small"
-                    type="button"
-                    onClick={() => removeAccount(account.id)}
-                  >
-                    Elimina
-                  </button>
+                <div className="account-grid">
+                  {accounts
+                    .filter((account) => isSystemAccount(account))
+                    .map((account) => (
+                      <div className="account-card system-account" key={account.id}>
+                        <div className="account-meta">
+                          <span className="account-emoji">
+                            {account.emoji && account.emoji.trim() ? account.emoji : "O"}
+                          </span>
+                          <div className="account-info">
+                            <strong>{account.name}</strong>
+                            <span className="section-subtitle">
+                              {accountTypeLabels[account.type] ?? account.type}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="account-actions">
+                          <span className="account-badge">Sistema</span>
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() => startAccountEdit(account)}
+                          >
+                            Modifica
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                 </div>
               </div>
-            ))}
-          </div>
+            )}
+            <div className="account-section">
+              <div className="section-header">
+                <div>
+                  <h4>Personali</h4>
+                  <p className="section-subtitle">Conti creati manualmente</p>
+                </div>
+              </div>
+              <div className="account-grid">
+                {accounts
+                  .filter((account) => !isSystemAccount(account))
+                  .map((account) => (
+                    <div className="account-card" key={account.id}>
+                      <div className="account-meta">
+                        <span className="account-emoji">
+                          {account.emoji && account.emoji.trim() ? account.emoji : "O"}
+                        </span>
+                        <div className="account-info">
+                          <strong>{account.name}</strong>
+                          <span className="section-subtitle">
+                            {accountTypeLabels[account.type] ?? account.type}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="account-actions">
+                        <button
+                          className="button ghost small"
+                          type="button"
+                          onClick={() => startAccountEdit(account)}
+                        >
+                          Modifica
+                        </button>
+                        <button
+                          className="button ghost small"
+                          type="button"
+                          onClick={() => removeAccount(account.id)}
+                        >
+                          Elimina
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </>
         )}
       </div>
 

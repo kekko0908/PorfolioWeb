@@ -645,28 +645,42 @@ const Transactions = () => {
             <div className="empty">Nessuna transazione registrata.</div>
           ) : (
             recentTransactions.map((item) => {
-              const categoryName =
-                categoryMap.get(item.category_id) ?? "Categoria";
-              const accountName =
-                accountMap.get(item.account_id) ?? "Conto";
-              const typeLabel = transactionTypeLabels[item.type];
-              const amountClass = item.flow === "in" ? "positive" : "negative";
+              const category = categoryMap.get(item.category_id) ?? "Categoria";
+              const account = accountMap.get(item.account_id) ?? "Conto";
+              const isOut =
+                item.type === "expense" ||
+                (item.type === "investment" && item.flow === "out") ||
+                (item.type === "transfer" && item.flow === "out");
+              const amount = isOut ? -item.amount : item.amount;
+              const typeLabel =
+                item.type === "income"
+                  ? "Entrata"
+                  : item.type === "expense"
+                    ? "Uscita"
+                    : item.type === "investment"
+                      ? item.flow === "in"
+                        ? "Ritorno"
+                        : "Output capitale"
+                      : "Trasferimento";
               return (
                 <div className="transaction-row" key={item.id}>
                   <div className="transaction-meta">
                     <span className="transaction-date">{formatDate(item.date)}</span>
-                    <span className="transaction-category">{categoryName}</span>
-                    <span className="transaction-note">{accountName}</span>
-                    {item.note && (
-                      <span className="transaction-note">{item.note}</span>
-                    )}
+                    <strong className="transaction-category">{category}</strong>
+                    <span className="transaction-note">
+                      {item.note ?? "Nessuna nota"}
+                    </span>
                   </div>
                   <div className="transaction-tags">
                     <span className={`chip ${item.type}`}>{typeLabel}</span>
-                    <span className="transaction-note">{item.currency}</span>
-                  </div>
-                  <div className={`transaction-amount ${amountClass}`}>
-                    {formatCurrency(item.amount, item.currency)}
+                    <span className="chip">{account}</span>
+                    <span
+                      className={`transaction-amount ${
+                        isOut ? "negative" : "positive"
+                      }`}
+                    >
+                      {formatCurrency(amount, item.currency)}
+                    </span>
                   </div>
                 </div>
               );

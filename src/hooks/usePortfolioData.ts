@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Account, Category, Goal, Holding, Setting, Transaction } from "../types";
 import {
+  createAccount,
   fetchAccounts,
   fetchCategories,
   fetchGoals,
@@ -18,6 +19,10 @@ export const usePortfolioData = () => {
   const [settings, setSettings] = useState<Setting | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const creatingEmergencyRef = useRef(false);
+
+  const hasEmergencyAccount = (items: Account[]) =>
+    items.some((account) => /emergenza|emergency/i.test(account.name));
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -30,16 +35,33 @@ export const usePortfolioData = () => {
         nextTransactions,
         nextHoldings,
         nextSettings
-      ] =
-        await Promise.all([
-          fetchAccounts(),
-          fetchCategories(),
-          fetchGoals(),
-          fetchTransactions(),
-          fetchHoldings(),
-          fetchSettings()
-        ]);
-      setAccounts(nextAccounts);
+      ] = await Promise.all([
+        fetchAccounts(),
+        fetchCategories(),
+        fetchGoals(),
+        fetchTransactions(),
+        fetchHoldings(),
+        fetchSettings()
+      ]);
+      let accountsToUse = nextAccounts;
+      if (!hasEmergencyAccount(nextAccounts) && !creatingEmergencyRef.current) {
+        creatingEmergencyRef.current = true;
+        try {
+          await createAccount({
+            name: "Fondo emergenza",
+            type: "bank",
+            emoji: null,
+            currency: nextSettings?.base_currency ?? "EUR",
+            opening_balance: 0
+          });
+          accountsToUse = await fetchAccounts();
+        } catch (err) {
+          console.error("Impossibile creare il conto Fondo emergenza.", err);
+        } finally {
+          creatingEmergencyRef.current = false;
+        }
+      }
+      setAccounts(accountsToUse);
       setCategories(nextCategories);
       setGoals(nextGoals);
       setTransactions(nextTransactions);

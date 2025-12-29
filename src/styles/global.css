@@ -351,6 +351,10 @@ label {
   gap: 14px;
 }
 
+.account-section + .account-section {
+  margin-top: 20px;
+}
+
 .account-card {
   padding: 14px;
   border-radius: var(--radius-sm);
@@ -362,6 +366,11 @@ label {
   gap: 12px;
   min-width: 0;
   flex-wrap: wrap;
+}
+
+.account-card.system-account {
+  border-color: rgba(59, 130, 246, 0.4);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(15, 23, 32, 0.92));
 }
 
 .account-meta {
@@ -406,6 +415,15 @@ label {
 .account-actions {
   display: flex;
   gap: 8px;
+}
+
+.account-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.18);
+  color: #bfdbfe;
 }
 
 .goal-grid {
@@ -1074,6 +1092,15 @@ label {
   flex-wrap: wrap;
 }
 
+.allocation-item-header.stacked {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.allocation-item-header.stacked .allocation-item-meta {
+  width: 100%;
+}
+
 .allocation-item-meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1703,6 +1730,12 @@ label {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 12px;
   margin-top: 12px;
+}
+
+.impact-values > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .impact-value {

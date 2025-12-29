@@ -54,7 +54,7 @@ const assetClasses = [
   "Altro"
 ];
 
-const investmentOnlyLabels = new Set(["ETF", "Obbligazioni", "Crypto"]);
+const investmentOnlyLabels = new Set(["ETF", "Obbligazioni"]);
 
 const emptyForm = {
   name: "",
@@ -1755,9 +1755,12 @@ const Portfolio = () => {
                 const shareBase =
                   allocationView === "investment" ? coreInvestmentTotal : targetTotal;
                 const share = shareBase > 0 ? (deltaAbs / shareBase) * 100 : 0;
+                const stackMeta = item.label === "Cash" || item.label === "Crypto";
                 return (
                   <div className={`allocation-item ${actionClass}`} key={item.label}>
-                    <div className="allocation-item-header">
+                    <div
+                      className={`allocation-item-header${stackMeta ? " stacked" : ""}`}
+                    >
                       <strong>{item.label}</strong>
                       <div className="allocation-item-meta">
                         <span>
