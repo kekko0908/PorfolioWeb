@@ -95,6 +95,7 @@ const Settings = () => {
   const [recentAvatars, setRecentAvatars] = useState<string[]>([]);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(false);
+  const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
 
   const isSystemAccount = (account: Account) =>
     /emergenza|emergency/i.test(account.name);
@@ -693,140 +694,73 @@ const Settings = () => {
           </div>
         </form>
         {profileMessage && <div className="notice">{profileMessage}</div>}
-        <div className="profile-avatar-picker">
-          <div className="profile-picker-header">
-            <div>
-              <strong>Avatar DiceBear</strong>
-              <span className="section-subtitle">
-                Scegli uno stile e un seed.
-              </span>
-            </div>
-            <select
-              className="select"
-              value={avatarStyle}
-              onChange={(event) => setAvatarStyle(event.target.value)}
-            >
-              {dicebearStyles.map((style) => (
-                <option key={style.value} value={style.value}>
-                  {style.label}
-                </option>
-              ))}
-            </select>
+        <div className="profile-avatar-toggle">
+          <div>
+            <strong>Avatar</strong>
+            <span className="section-subtitle">
+              Mostra la sezione DiceBear, preferiti e ultimi aggiunti.
+            </span>
           </div>
-          <div className="profile-picker-controls">
-            <input
-              className="input"
-              placeholder="Seed personalizzato"
-              value={customSeed}
-              onChange={(event) => setCustomSeed(event.target.value)}
-            />
-            <button className="button secondary" type="button" onClick={handleCustomSeed}>
-              Usa seed
-            </button>
-            <button className="button ghost" type="button" onClick={handleRandomSeed}>
-              Random
-            </button>
-            <div className="profile-fav-strip">
-              <span className="profile-fav-label">Preferiti</span>
-              <div className="profile-fav-list">
-                {favoriteAvatars.length === 0 ? (
-                  <span className="section-subtitle">Nessuno</span>
-                ) : (
-                  favoriteAvatars.slice(0, 4).map((url, index) => (
-                    <div
-                      className={`avatar-option compact${
-                        avatarUrl === url ? " active" : ""
-                      }`}
-                      key={`fav-mini-${url}-${index}`}
-                    >
-                      <button
-                        className="avatar-select"
-                        type="button"
-                        onClick={() => {
-                          setAvatarUrl(url);
-                          pushRecentAvatar(url);
-                        }}
-                      >
-                        <img src={url} alt="Avatar preferito" loading="lazy" />
-                        <span>Pref</span>
-                      </button>
-                      <button
-                        className="avatar-fav active"
-                        type="button"
-                        onClick={() => toggleFavoriteAvatar(url)}
-                        aria-label="Rimuovi dai preferiti"
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path
-                            d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                  ))
-                )}
+          <button
+            className="button ghost small"
+            type="button"
+            onClick={() => setAvatarPanelOpen((prev) => !prev)}
+            aria-expanded={avatarPanelOpen}
+            aria-controls="avatar-panel"
+          >
+            {avatarPanelOpen ? "Nascondi avatar" : "Mostra avatar"}
+          </button>
+        </div>
+        {avatarPanelOpen && (
+          <div className="profile-avatar-picker" id="avatar-panel">
+            <div className="profile-picker-header">
+              <div>
+                <strong>Avatar DiceBear</strong>
+                <span className="section-subtitle">
+                  Scegli uno stile e un seed.
+                </span>
               </div>
+              <select
+                className="select"
+                value={avatarStyle}
+                onChange={(event) => setAvatarStyle(event.target.value)}
+              >
+                {dicebearStyles.map((style) => (
+                  <option key={style.value} value={style.value}>
+                    {style.label}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
-          <div className="avatar-grid">
-            {dicebearSeeds.map((seed) => {
-              const url = buildDicebearUrl(avatarStyle, seed);
-              const isActive = avatarUrl === url;
-              const isFavorite = favoriteAvatars.includes(url);
-              return (
-                <div
-                  className={`avatar-option${isActive ? " active" : ""}`}
-                  key={`seed-${seed}`}
-                >
-                  <button
-                    className="avatar-select"
-                    type="button"
-                    onClick={() => handleAvatarPick(seed)}
-                  >
-                    <img src={url} alt={`Avatar ${seed}`} loading="lazy" />
-                    <span>{seed}</span>
-                  </button>
-                  <button
-                    className={`avatar-fav${isFavorite ? " active" : ""}`}
-                    type="button"
-                    onClick={() => toggleFavoriteAvatar(url)}
-                    aria-label={
-                      isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
-                    }
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path
-                        d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
-                      />
-                    </svg>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          {favoriteAvatars.length > 0 && (
-            <div className="avatar-section">
-              <div className="avatar-section-header">
-                <div>
-                  <strong>Preferiti</strong>
-                  <span className="section-subtitle">I tuoi avatar salvati.</span>
-                </div>
-                <button
-                  className="button ghost small"
-                  type="button"
-                  onClick={() => setFavoritesOpen((prev) => !prev)}
-                >
-                  {favoritesOpen ? "Nascondi" : "Mostra"} ({favoriteAvatars.length})
-                </button>
-              </div>
-              {favoritesOpen && (
-                <div className="avatar-grid compact">
-                  {favoriteAvatars.map((url, index) => {
-                    const isActive = avatarUrl === url;
-                    return (
+            <div className="profile-picker-controls">
+              <input
+                className="input"
+                placeholder="Seed personalizzato"
+                value={customSeed}
+                onChange={(event) => setCustomSeed(event.target.value)}
+              />
+              <button
+                className="button secondary"
+                type="button"
+                onClick={handleCustomSeed}
+              >
+                Usa seed
+              </button>
+              <button className="button ghost" type="button" onClick={handleRandomSeed}>
+                Random
+              </button>
+              <div className="profile-fav-strip">
+                <span className="profile-fav-label">Preferiti</span>
+                <div className="profile-fav-list">
+                  {favoriteAvatars.length === 0 ? (
+                    <span className="section-subtitle">Nessuno</span>
+                  ) : (
+                    favoriteAvatars.slice(0, 4).map((url, index) => (
                       <div
-                        className={`avatar-option compact${isActive ? " active" : ""}`}
-                        key={`favorite-${url}-${index}`}
+                        className={`avatar-option compact${
+                          avatarUrl === url ? " active" : ""
+                        }`}
+                        key={`fav-mini-${url}-${index}`}
                       >
                         <button
                           className="avatar-select"
@@ -837,7 +771,7 @@ const Settings = () => {
                           }}
                         >
                           <img src={url} alt="Avatar preferito" loading="lazy" />
-                          <span>{getAvatarLabel(url, "Preferito")}</span>
+                          <span>Pref</span>
                         </button>
                         <button
                           className="avatar-fav active"
@@ -852,70 +786,160 @@ const Settings = () => {
                           </svg>
                         </button>
                       </div>
-                    );
-                  })}
+                    ))
+                  )}
                 </div>
-              )}
-            </div>
-          )}
-          {recentAvatars.length > 0 && (
-            <div className="avatar-section">
-              <div className="avatar-section-header">
-                <div>
-                  <strong>Ultimi aggiunti</strong>
-                  <span className="section-subtitle">Selezioni recenti.</span>
-                </div>
-                <button
-                  className="button ghost small"
-                  type="button"
-                  onClick={() => setRecentsOpen((prev) => !prev)}
-                >
-                  {recentsOpen ? "Nascondi" : "Mostra"} ({recentAvatars.length})
-                </button>
               </div>
-              {recentsOpen && (
-                <div className="avatar-grid compact">
-                  {recentAvatars.map((url, index) => {
-                    const isActive = avatarUrl === url;
-                    const isFavorite = favoriteAvatars.includes(url);
-                    return (
-                      <div
-                        className={`avatar-option compact${isActive ? " active" : ""}`}
-                        key={`recent-${url}-${index}`}
-                      >
-                        <button
-                          className="avatar-select"
-                          type="button"
-                          onClick={() => setAvatarUrl(url)}
-                        >
-                          <img src={url} alt="Avatar recente" loading="lazy" />
-                          <span>{getAvatarLabel(url, "Recente")}</span>
-                        </button>
-                        <button
-                          className={`avatar-fav${isFavorite ? " active" : ""}`}
-                          type="button"
-                          onClick={() => toggleFavoriteAvatar(url)}
-                          aria-label={
-                            isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
-                          }
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path
-                              d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
             </div>
-          )}
-          <span className="section-subtitle">
-            Puoi anche incollare un URL o caricare una foto.
-          </span>
-        </div>
+            <div className="avatar-grid">
+              {dicebearSeeds.map((seed) => {
+                const url = buildDicebearUrl(avatarStyle, seed);
+                const isActive = avatarUrl === url;
+                const isFavorite = favoriteAvatars.includes(url);
+                return (
+                  <div
+                    className={`avatar-option${isActive ? " active" : ""}`}
+                    key={`seed-${seed}`}
+                  >
+                    <button
+                      className="avatar-select"
+                      type="button"
+                      onClick={() => handleAvatarPick(seed)}
+                    >
+                      <img src={url} alt={`Avatar ${seed}`} loading="lazy" />
+                      <span>{seed}</span>
+                    </button>
+                    <button
+                      className={`avatar-fav${isFavorite ? " active" : ""}`}
+                      type="button"
+                      onClick={() => toggleFavoriteAvatar(url)}
+                      aria-label={
+                        isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
+                      }
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            {favoriteAvatars.length > 0 && (
+              <div className="avatar-section">
+                <div className="avatar-section-header">
+                  <div>
+                    <strong>Preferiti</strong>
+                    <span className="section-subtitle">I tuoi avatar salvati.</span>
+                  </div>
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setFavoritesOpen((prev) => !prev)}
+                  >
+                    {favoritesOpen ? "Nascondi" : "Mostra"} ({favoriteAvatars.length})
+                  </button>
+                </div>
+                {favoritesOpen && (
+                  <div className="avatar-grid compact">
+                    {favoriteAvatars.map((url, index) => {
+                      const isActive = avatarUrl === url;
+                      return (
+                        <div
+                          className={`avatar-option compact${isActive ? " active" : ""}`}
+                          key={`favorite-${url}-${index}`}
+                        >
+                          <button
+                            className="avatar-select"
+                            type="button"
+                            onClick={() => {
+                              setAvatarUrl(url);
+                              pushRecentAvatar(url);
+                            }}
+                          >
+                            <img src={url} alt="Avatar preferito" loading="lazy" />
+                            <span>{getAvatarLabel(url, "Preferito")}</span>
+                          </button>
+                          <button
+                            className="avatar-fav active"
+                            type="button"
+                            onClick={() => toggleFavoriteAvatar(url)}
+                            aria-label="Rimuovi dai preferiti"
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path
+                                d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            {recentAvatars.length > 0 && (
+              <div className="avatar-section">
+                <div className="avatar-section-header">
+                  <div>
+                    <strong>Ultimi aggiunti</strong>
+                    <span className="section-subtitle">Selezioni recenti.</span>
+                  </div>
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setRecentsOpen((prev) => !prev)}
+                  >
+                    {recentsOpen ? "Nascondi" : "Mostra"} ({recentAvatars.length})
+                  </button>
+                </div>
+                {recentsOpen && (
+                  <div className="avatar-grid compact">
+                    {recentAvatars.map((url, index) => {
+                      const isActive = avatarUrl === url;
+                      const isFavorite = favoriteAvatars.includes(url);
+                      return (
+                        <div
+                          className={`avatar-option compact${isActive ? " active" : ""}`}
+                          key={`recent-${url}-${index}`}
+                        >
+                          <button
+                            className="avatar-select"
+                            type="button"
+                            onClick={() => setAvatarUrl(url)}
+                          >
+                            <img src={url} alt="Avatar recente" loading="lazy" />
+                            <span>{getAvatarLabel(url, "Recente")}</span>
+                          </button>
+                          <button
+                            className={`avatar-fav${isFavorite ? " active" : ""}`}
+                            type="button"
+                            onClick={() => toggleFavoriteAvatar(url)}
+                            aria-label={
+                              isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
+                            }
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path
+                                d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            <span className="section-subtitle">
+              Puoi anche incollare un URL o caricare una foto.
+            </span>
+          </div>
+        )}
         <div className="profile-actions">
           <form className="profile-form" onSubmit={handleEmailUpdate}>
             <label className="profile-label">Email</label>
