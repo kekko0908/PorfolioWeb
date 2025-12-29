@@ -62,12 +62,18 @@ export const calculateMonthlyBurnRate = (
   );
   const now = new Date();
   const last30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  return transactions
+  const fixedTotal = transactions
     .filter(
       (item) =>
         item.type === "expense" &&
         fixedCategoryIds.has(item.category_id) &&
         new Date(item.date) >= last30
+    )
+    .reduce((sum, item) => sum + item.amount, 0);
+  if (fixedTotal > 0) return fixedTotal;
+  return transactions
+    .filter(
+      (item) => item.type === "expense" && new Date(item.date) >= last30
     )
     .reduce((sum, item) => sum + item.amount, 0);
 };

@@ -8,7 +8,7 @@ import {
   seedDefaultCategories,
   updateTransaction
 } from "../lib/api";
-import { formatCurrency } from "../lib/format";
+import { formatCurrency, formatDate } from "../lib/format";
 import type { Category, Transaction, TransactionType } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -29,6 +29,13 @@ const iconByName: Record<string, string> = {
   "Versamenti (Input Capitale)": "\u{1F4C8}",
   "Rendita Generata (Flusso Positivo)": "\u{1F4B8}",
   "Disinvestimenti (Output Capitale)": "\u{1F4C9}"
+};
+
+const transactionTypeLabels: Record<TransactionType, string> = {
+  income: "Entrata",
+  expense: "Uscita",
+  investment: "Investimento",
+  transfer: "Trasferimento"
 };
 
 type CategoryWithChildren = Category & { children: Category[] };
@@ -72,6 +79,21 @@ const Transactions = () => {
     return byId;
   }, [categories]);
 
+  const categoryMap = useMemo(
+    () => new Map(categories.map((category) => [category.id, category.name])),
+    [categories]
+  );
+  const accountMap = useMemo(
+    () =>
+      new Map(
+        accounts.map((account) => [
+          account.id,
+          `${account.emoji ? `${account.emoji} ` : ""}${account.name}`
+        ])
+      ),
+    [accounts]
+  );
+
   const transferCategoryId = useMemo(() => {
     const match = categories.find((category) =>
       category.name.toLowerCase().includes("giroconti")
@@ -114,6 +136,15 @@ const Transactions = () => {
       })
       .filter((item): item is CategoryWithChildren => item !== null);
   }, [categoryOptions, categorySearch]);
+
+  const recentTransactions = useMemo(() => {
+    const sorted = [...transactions].sort((a, b) => {
+      const dateCompare = b.date.localeCompare(a.date);
+      if (dateCompare !== 0) return dateCompare;
+      return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+    });
+    return sorted.slice(0, 6);
+  }, [transactions]);
 
   const summary = useMemo(() => {
     const limit = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -328,7 +359,7 @@ const Transactions = () => {
       <div className="section-header">
         <div>
           <h2 className="section-title">Transazioni</h2>
-          <p className="section-subtitle">Entrate, uscite e movimenti investimento</p>
+          <p className="section-subtitle">Entrate, uscite e trasferimenti</p>
         </div>
       </div>
 
@@ -375,8 +406,10 @@ const Transactions = () => {
           >
             <option value="income">Entrata</option>
             <option value="expense">Uscita</option>
-            <option value="investment">Investimento</option>
             <option value="transfer">Trasferimento</option>
+            <option value="investment" hidden>
+              Investimento
+            </option>
           </select>
           {isTransfer ? (
             <>
@@ -447,82 +480,19 @@ const Transactions = () => {
           )}
           {!isTransfer && (
             <div className="category-picker form-span">
-            <button
-              className="picker-trigger"
-              type="button"
-              onClick={() => setCategoryOpen((open) => !open)}
-              aria-expanded={categoryOpen}
-            >
-              <span className="picker-label">
-                <span className="picker-icon">{selectedIcon}</span>
-                {selectedLabel}
-              </span>
-              <span className="picker-caret">v</span>
-            </button>
-            {categoryOpen && (
-              <div className="picker-panel">
-                <div className="picker-search">
-                  <input
-                    className="input"
-                    placeholder="Cerca categoria"
-                    value={categorySearch}
-                    onChange={(event) => setCategorySearch(event.target.value)}
-                  />
-                  <button
-                    className="button ghost small"
-                    type="button"
-                    onClick={() => setCategorySearch("")}
-                  >
-                    Reset
-                  </button>
-                  <button
-                    className="button secondary small"
-                    type="button"
-                    onClick={() => setCategoryOpen(false)}
-                  >
-                    Chiudi
-                  </button>
-                </div>
-                <div className="picker-groups">
-                  {filteredCategoryOptions.length === 0 ? (
-                    <div className="empty">Nessuna categoria trovata.</div>
-                  ) : (
-                    filteredCategoryOptions.map((parent) => (
-                      <div className="picker-group" key={parent.id}>
-                        <button
-                          className="picker-parent"
-                          type="button"
-                          onClick={() => pickCategory(parent.id)}
-                        >
-                          <span className="picker-icon">
-                            {categoryIcons.get(parent.id) ?? "\u{1F4CC}"}
-                          </span>
-                          {parent.name}
-                        </button>
-                        {parent.children.length > 0 && (
-                          <div className="picker-children">
-                            {parent.children.map((child) => (
-                              <button
-                                className="picker-child"
-                                type="button"
-                                key={child.id}
-                                onClick={() => pickCategory(child.id)}
-                              >
-                                <span className="picker-icon">
-                                  {categoryIcons.get(child.id) ?? "\u{1F4CC}"}
-                                </span>
-                                {child.name}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
+              <button
+                className="picker-trigger"
+                type="button"
+                onClick={() => setCategoryOpen(true)}
+                aria-expanded={categoryOpen}
+              >
+                <span className="picker-label">
+                  <span className="picker-icon">{selectedIcon}</span>
+                  {selectedLabel}
+                </span>
+                <span className="picker-caret">v</span>
+              </button>
+            </div>
           )}
           {isTransfer && (
             <div className="notice form-span">
@@ -586,8 +556,123 @@ const Transactions = () => {
             )}
           </div>
         </form>
+        {categoryOpen && !isTransfer && (
+          <div className="modal-backdrop" onClick={() => setCategoryOpen(false)}>
+            <div
+              className="modal-card picker-modal"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="modal-header">
+                <div>
+                  <h3>Scegli categoria</h3>
+                  <p className="section-subtitle">Seleziona la categoria corretta</p>
+                </div>
+                <button
+                  className="button ghost small"
+                  type="button"
+                  onClick={() => setCategoryOpen(false)}
+                >
+                  Chiudi
+                </button>
+              </div>
+              <div className="picker-panel picker-panel-modal">
+                <div className="picker-search">
+                  <input
+                    className="input"
+                    placeholder="Cerca categoria"
+                    value={categorySearch}
+                    onChange={(event) => setCategorySearch(event.target.value)}
+                  />
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setCategorySearch("")}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="picker-groups">
+                  {filteredCategoryOptions.length === 0 ? (
+                    <div className="empty">Nessuna categoria trovata.</div>
+                  ) : (
+                    filteredCategoryOptions.map((parent) => (
+                      <div className="picker-group" key={parent.id}>
+                        <button
+                          className="picker-parent"
+                          type="button"
+                          onClick={() => pickCategory(parent.id)}
+                        >
+                          <span className="picker-icon">
+                            {categoryIcons.get(parent.id) ?? "\u{1F4CC}"}
+                          </span>
+                          {parent.name}
+                        </button>
+                        {parent.children.length > 0 && (
+                          <div className="picker-children">
+                            {parent.children.map((child) => (
+                              <button
+                                className="picker-child"
+                                type="button"
+                                key={child.id}
+                                onClick={() => pickCategory(child.id)}
+                              >
+                                <span className="picker-icon">
+                                  {categoryIcons.get(child.id) ?? "\u{1F4CC}"}
+                                </span>
+                                {child.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {message && <div className="notice">{message}</div>}
         {error && <div className="error">{error}</div>}
+        <div className="transaction-list">
+          <div className="section-header">
+            <div>
+              <h4>Ultime transazioni</h4>
+              <p className="section-subtitle">Lista rapida senza filtri</p>
+            </div>
+          </div>
+          {recentTransactions.length === 0 ? (
+            <div className="empty">Nessuna transazione registrata.</div>
+          ) : (
+            recentTransactions.map((item) => {
+              const categoryName =
+                categoryMap.get(item.category_id) ?? "Categoria";
+              const accountName =
+                accountMap.get(item.account_id) ?? "Conto";
+              const typeLabel = transactionTypeLabels[item.type];
+              const amountClass = item.flow === "in" ? "positive" : "negative";
+              return (
+                <div className="transaction-row" key={item.id}>
+                  <div className="transaction-meta">
+                    <span className="transaction-date">{formatDate(item.date)}</span>
+                    <span className="transaction-category">{categoryName}</span>
+                    <span className="transaction-note">{accountName}</span>
+                    {item.note && (
+                      <span className="transaction-note">{item.note}</span>
+                    )}
+                  </div>
+                  <div className="transaction-tags">
+                    <span className={`chip ${item.type}`}>{typeLabel}</span>
+                    <span className="transaction-note">{item.currency}</span>
+                  </div>
+                  <div className={`transaction-amount ${amountClass}`}>
+                    {formatCurrency(item.amount, item.currency)}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
 
       {accounts.length === 0 && (

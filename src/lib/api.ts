@@ -229,6 +229,10 @@ export const fetchSettings = async (): Promise<Setting | null> => {
   return {
     ...data,
     emergency_fund: toNumber(data.emergency_fund),
+    emergency_fund_months:
+      data.emergency_fund_months === null || data.emergency_fund_months === undefined
+        ? null
+        : toNumber(data.emergency_fund_months),
     cash_target_cap: data.cash_target_cap === null ? null : toNumber(data.cash_target_cap),
     target_cash_pct: data.target_cash_pct ?? null,
     target_etf_pct: data.target_etf_pct ?? null,
@@ -248,6 +252,7 @@ export const upsertSettings = async (
         | "target_etf_pct"
         | "target_bond_pct"
         | "target_emergency_pct"
+        | "emergency_fund_months"
         | "rebalance_months"
       >
     >

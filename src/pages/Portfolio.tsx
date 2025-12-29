@@ -16,8 +16,12 @@ import {
   formatCurrencySafe,
   formatPercentSafe
 } from "../lib/format";
-import { fetchAssetOverview, fetchGlobalQuote } from "../lib/market";
-import { buildAccountBalances, resolveEmergencyFundBalance } from "../lib/metrics";
+import { fetchGlobalQuote } from "../lib/market";
+import {
+  buildAccountBalances,
+  calculateMonthlyBurnRate,
+  resolveEmergencyFundBalance
+} from "../lib/metrics";
 import type { Holding } from "../types";
 
 type AllocationTargetItem = {
@@ -28,9 +32,14 @@ type AllocationTargetItem = {
 };
 
 type AllocationCap = {
-  enabled: boolean;
+  mode: "rel" | "set" | "off";
   value: string;
   pct: string;
+};
+
+const parseNumberInput = (value: string) => {
+  if (!value) return Number.NaN;
+  return Number(value.trim().replace(",", "."));
 };
 
 const assetClasses = [
@@ -61,27 +70,13 @@ const emptyForm = {
 
 const Portfolio = () => {
   const { session } = useAuth();
-  const { accounts, transactions, holdings, settings, refresh, loading, error } =
+  const { accounts, categories, transactions, holdings, settings, refresh, loading, error } =
     usePortfolioData();
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Holding | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [priceMessage, setPriceMessage] = useState<string | null>(null);
   const [priceLoading, setPriceLoading] = useState<string | null>(null);
-  const [tickerMessage, setTickerMessage] = useState<string | null>(null);
-  const [tickerLoading, setTickerLoading] = useState<string | null>(null);
-  const [tickerInfo, setTickerInfo] = useState<
-    Record<
-      string,
-      {
-        name?: string;
-        assetType?: string;
-        exchange?: string;
-        country?: string;
-        currency?: string;
-      }
-    >
-  >({});
   const [allocationMessage, setAllocationMessage] = useState<string | null>(null);
   const [targetMessage, setTargetMessage] = useState<string | null>(null);
   const [targetDrafts, setTargetDrafts] = useState<Record<string, number>>({});
@@ -93,13 +88,29 @@ const Portfolio = () => {
     bonds: 20
   });
   const [allocationCaps, setAllocationCaps] = useState<Record<string, AllocationCap>>({
-    cash: { enabled: false, value: "", pct: "" }
+    cash: { mode: "rel", value: "", pct: "" }
   });
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedRef = useRef<string | null>(null);
   const autoSaveReadyRef = useRef(false);
   const [capsModalOpen, setCapsModalOpen] = useState(false);
+  const [investmentFocusTarget, setInvestmentFocusTarget] = useState<string | null>(
+    null
+  );
+  const [investmentFocusCurrent, setInvestmentFocusCurrent] = useState<string | null>(
+    null
+  );
+  const [tradeHolding, setTradeHolding] = useState<Holding | null>(null);
+  const [tradeSide, setTradeSide] = useState<"buy" | "sell">("buy");
+  const [tradeForm, setTradeForm] = useState({
+    quantity: "",
+    price: "",
+    fees: ""
+  });
+  const [tradeMessage, setTradeMessage] = useState<string | null>(null);
+  const [tradeLoading, setTradeLoading] = useState(false);
   const [allocationTargetsLoaded, setAllocationTargetsLoaded] = useState(false);
+  const [emergencyFundMonths, setEmergencyFundMonths] = useState(6);
   const [allocationTargetItems, setAllocationTargetItems] = useState<
     AllocationTargetItem[]
   >([
@@ -122,13 +133,14 @@ const Portfolio = () => {
   const isCash = form.asset_class === "Liquidita";
   const cashCapValue = useMemo(() => {
     const cashCap = allocationCaps.cash;
-    if (!cashCap?.enabled || !cashCap.value.trim()) return null;
-    const parsed = Number(cashCap.value);
+    if (!cashCap || cashCap.mode !== "set" || !cashCap.value.trim()) return null;
+    const parsed = parseNumberInput(cashCap.value);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
   }, [allocationCaps]);
 
   useEffect(() => {
     if (!settings) return;
+    setEmergencyFundMonths(settings.emergency_fund_months ?? 6);
     if (!allocationTargetsLoaded) {
       setAllocationTargetItems((prev) => {
         const next = [...prev];
@@ -161,17 +173,21 @@ const Portfolio = () => {
         return next;
       });
     }
-    setAllocationCaps((prev) => ({
-      ...prev,
-      cash: {
-        enabled: settings.cash_target_cap !== null && settings.cash_target_cap !== undefined,
-        value:
-          settings.cash_target_cap !== null && settings.cash_target_cap !== undefined
-            ? String(settings.cash_target_cap)
-            : "",
-        pct: prev.cash?.pct ?? ""
+    setAllocationCaps((prev) => {
+      const next = { ...prev };
+      const hasCashTarget =
+        settings.cash_target_cap !== null && settings.cash_target_cap !== undefined;
+      if (hasCashTarget) {
+        next.cash = {
+          mode: "set",
+          value: String(settings.cash_target_cap),
+          pct: prev.cash?.pct ?? ""
+        };
+      } else if (!next.cash) {
+        next.cash = { mode: "rel", value: "", pct: "" };
       }
-    }));
+      return next;
+    });
 
     const clampPct = (value: number) => Math.max(0, Math.min(100, value));
     const etfRaw = settings.target_etf_pct ?? 80;
@@ -188,6 +204,13 @@ const Portfolio = () => {
   }, [settings]);
 
   useEffect(() => {
+    if (allocationView === "general") {
+      setInvestmentFocusTarget(null);
+      setInvestmentFocusCurrent(null);
+    }
+  }, [allocationView]);
+
+  useEffect(() => {
     if (!session || allocationTargetsLoaded) return;
     let cancelled = false;
     const localKey = "portfolio_allocation_targets_v1";
@@ -199,6 +222,7 @@ const Portfolio = () => {
           items: AllocationTargetItem[];
           colors?: Record<string, string>;
           caps?: Record<string, AllocationCap>;
+          emergencyFundMonths?: number;
         }
       | null => {
       if (!stored || typeof stored !== "string") return null;
@@ -207,21 +231,39 @@ const Portfolio = () => {
           items?: AllocationTargetItem[];
           colors?: Record<string, string>;
           caps?: Record<string, AllocationCap>;
+          emergencyFundMonths?: number;
         };
         if (!Array.isArray(parsed.items)) return null;
-        return { items: parsed.items, colors: parsed.colors, caps: parsed.caps };
+        return {
+          items: parsed.items,
+          colors: parsed.colors,
+          caps: parsed.caps,
+          emergencyFundMonths: parsed.emergencyFundMonths
+        };
       } catch {
         return null;
       }
     };
 
-    const normalizeCaps = (caps?: Record<string, AllocationCap>) => {
+    const normalizeCaps = (
+      caps?: Record<string, AllocationCap | { enabled?: boolean; value?: string; pct?: string }>
+    ) => {
       if (!caps) return undefined;
       const next: Record<string, AllocationCap> = {};
       Object.entries(caps).forEach(([key, cap]) => {
+        const rawMode = (cap as AllocationCap)?.mode;
+        const rawValue = typeof cap?.value === "string" ? cap.value : "";
+        const parsedValue = parseNumberInput(rawValue);
+        const hasValue = rawValue.trim() !== "" && Number.isFinite(parsedValue);
+        const mode =
+          rawMode === "set" || rawMode === "off" || rawMode === "rel"
+            ? rawMode
+            : cap?.enabled && hasValue
+              ? "set"
+              : "rel";
         next[key] = {
-          enabled: Boolean(cap?.enabled),
-          value: typeof cap?.value === "string" ? cap.value : "",
+          mode,
+          value: rawValue,
           pct: typeof cap?.pct === "string" ? cap.pct : ""
         };
       });
@@ -331,6 +373,9 @@ const Portfolio = () => {
           return next;
         });
         if (localCaps) setAllocationCaps(localCaps);
+        if (typeof local?.emergencyFundMonths === "number") {
+          setEmergencyFundMonths(local.emergencyFundMonths);
+        }
         setAllocationTargetsLoaded(true);
         return;
       }
@@ -341,11 +386,17 @@ const Portfolio = () => {
           setAllocationColors((prev) => ({ ...prev, ...local.colors }));
         }
         if (localCaps) setAllocationCaps(localCaps);
+        if (typeof local.emergencyFundMonths === "number") {
+          setEmergencyFundMonths(local.emergencyFundMonths);
+        }
         setAllocationTargetsLoaded(true);
         return;
       }
 
       if (localCaps) setAllocationCaps(localCaps);
+      if (typeof local?.emergencyFundMonths === "number") {
+        setEmergencyFundMonths(local.emergencyFundMonths);
+      }
       setAllocationTargetsLoaded(true);
     })().catch(() => {
       setAllocationTargetsLoaded(true);
@@ -362,11 +413,21 @@ const Portfolio = () => {
       const allowedKeys = new Set(allocationTargetItems.map((item) => item.key));
       allocationTargetItems.forEach((item) => {
         if (!next[item.key]) {
-          next[item.key] = { enabled: false, value: "", pct: "" };
+          next[item.key] = { mode: "rel", value: "", pct: "" };
           return;
         }
+        if (
+          next[item.key].mode !== "rel" &&
+          next[item.key].mode !== "set" &&
+          next[item.key].mode !== "off"
+        ) {
+          next[item.key].mode = "rel";
+        }
+        if (typeof next[item.key].value !== "string") {
+          next[item.key].value = "";
+        }
         if (typeof next[item.key].pct !== "string") {
-          next[item.key] = { ...next[item.key], pct: "" };
+          next[item.key].pct = "";
         }
       });
       Object.keys(next).forEach((key) => {
@@ -402,6 +463,13 @@ const Portfolio = () => {
     return token.toUpperCase();
   };
 
+  const formatHoldingLabel = (item: Holding) =>
+    `${item.emoji ? `${item.emoji} ` : ""}${item.name}`;
+  const formatQuantity = (value: number) =>
+    new Intl.NumberFormat("it-IT", { maximumFractionDigits: 4 }).format(
+      Number.isFinite(value) ? value : 0
+    );
+
   const resetForm = () => {
     setForm({ ...emptyForm, currency });
     setEditing(null);
@@ -411,7 +479,6 @@ const Portfolio = () => {
     resetForm();
     setMessage(null);
     setPriceMessage(null);
-    setTickerMessage(null);
   };
 
   const totalCap = useMemo(() => {
@@ -563,34 +630,126 @@ const Portfolio = () => {
     }
   };
 
-  const handleTickerInfo = async (item: Holding) => {
-    setTickerMessage(null);
-    const ticker = extractTicker(item.name);
-    if (!ticker) {
-      setTickerMessage("Inserisci il ticker all'inizio del nome (es. MWRD - ETF).");
+  const openTradeModal = (item: Holding, side: "buy" | "sell") => {
+    setTradeHolding(item);
+    setTradeSide(side);
+    setTradeForm({ quantity: "", price: "", fees: "" });
+    setTradeMessage(null);
+  };
+
+  const closeTradeModal = () => {
+    setTradeHolding(null);
+    setTradeMessage(null);
+  };
+
+  const handleTradeSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!tradeHolding) return;
+    setTradeMessage(null);
+
+    const quantity = Number(tradeForm.quantity);
+    const price = Number(tradeForm.price);
+    const fees = tradeForm.fees ? Number(tradeForm.fees) : 0;
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setTradeMessage("Inserisci una quantita valida.");
       return;
     }
-    setTickerLoading(item.id);
+    if (!Number.isFinite(price) || price <= 0) {
+      setTradeMessage("Inserisci un prezzo valido.");
+      return;
+    }
+    if (!Number.isFinite(fees) || fees < 0) {
+      setTradeMessage("Le commissioni devono essere positive.");
+      return;
+    }
+    if (tradeSide === "sell" && quantity > tradeHolding.quantity) {
+      setTradeMessage("Quantita superiore a quella disponibile.");
+      return;
+    }
+
+    const signed = tradeSide === "buy" ? 1 : -1;
+    const newQuantity = tradeHolding.quantity + signed * quantity;
+    const tradeValue = quantity * price + fees;
+    const costReduction = tradeHolding.avg_cost * quantity;
+    const newTotalCap =
+      tradeSide === "buy"
+        ? tradeHolding.total_cap + tradeValue
+        : Math.max(tradeHolding.total_cap - costReduction, 0);
+    const newAvgCost = newQuantity > 0 ? newTotalCap / newQuantity : 0;
+    const newCurrentValue = newQuantity > 0 ? newQuantity * price : 0;
+
+    setTradeLoading(true);
     try {
-      const info = await fetchAssetOverview(ticker);
-      setTickerInfo((prev) => ({
-        ...prev,
-        [item.id]: info
-      }));
+      await updateHolding(tradeHolding.id, {
+        quantity: newQuantity,
+        total_cap: newTotalCap,
+        avg_cost: newAvgCost,
+        current_value: newCurrentValue
+      });
+      await refresh();
+      closeTradeModal();
     } catch (err) {
-      setTickerMessage((err as Error).message);
+      setTradeMessage((err as Error).message);
     } finally {
-      setTickerLoading(null);
+      setTradeLoading(false);
     }
   };
 
-  const handleAllocationChange = (key: string, value: number) => {
+  const handleTargetPercentChange = (key: string, value: number) => {
     if (!Number.isFinite(value)) return;
-    const nextValue = Math.max(0, Math.min(100, value));
+    const mode = allocationCaps[key]?.mode ?? "rel";
+    if (mode !== "rel") return;
+    const remainingPctTotal =
+      targetTotal > 0
+        ? (allocationTargetsMeta.remainingTotal / targetTotal) * 100
+        : 0;
+    if (remainingPctTotal <= 0) return;
+
+    const relItems = allocationTargetItems.filter(
+      (item) => (allocationCaps[item.key]?.mode ?? "rel") === "rel"
+    );
+    if (relItems.length <= 1) return;
+
+    const relTotal = relItems.reduce(
+      (sum, item) => sum + (Number.isFinite(item.pct) ? item.pct : 0),
+      0
+    );
+    if (relTotal <= 0) return;
+
+    const desiredEff = Math.max(0, Math.min(remainingPctTotal, value));
+    const targetRatio = desiredEff / remainingPctTotal;
+    const otherItems = relItems.filter((item) => item.key !== key);
+    const otherTotal = otherItems.reduce(
+      (sum, item) => sum + (Number.isFinite(item.pct) ? item.pct : 0),
+      0
+    );
+
+    let newCurrentWeight = 0;
+    let scale = 0;
+
+    if (targetRatio <= 0) {
+      newCurrentWeight = 0;
+      scale = otherTotal > 0 ? relTotal / otherTotal : 0;
+    } else if (targetRatio >= 1 || otherTotal <= 0) {
+      newCurrentWeight = relTotal;
+      scale = 0;
+    } else {
+      newCurrentWeight = targetRatio * relTotal;
+      const newOtherTotal = relTotal - newCurrentWeight;
+      scale = otherTotal > 0 ? newOtherTotal / otherTotal : 0;
+    }
+
     setAllocationTargetItems((prev) =>
-      prev.map((item) =>
-        item.key === key ? { ...item, pct: nextValue } : item
-      )
+      prev.map((item) => {
+        if ((allocationCaps[item.key]?.mode ?? "rel") !== "rel") return item;
+        if (item.key === key) {
+          return { ...item, pct: Number(newCurrentWeight.toFixed(1)) };
+        }
+        const raw = Number.isFinite(item.pct) ? item.pct : 0;
+        const next = scale > 0 ? raw * scale : 0;
+        return { ...item, pct: Number(next.toFixed(1)) };
+      })
     );
   };
 
@@ -605,13 +764,26 @@ const Portfolio = () => {
     });
   };
 
+  const handleInvestmentTargetSelect = (label: string) => {
+    if (label === "ETF" || label === "Obbligazioni") {
+      setInvestmentFocusTarget(label);
+    }
+  };
+
+  const handleInvestmentCurrentSelect = (label: string) => {
+    if (label === "ETF" || label === "Obbligazioni") {
+      setInvestmentFocusCurrent(label);
+    }
+  };
+
   useEffect(() => {
     if (!session || !allocationTargetsLoaded) return;
     const snapshot = JSON.stringify({
       allocationTargetItems,
       investmentTargets,
       allocationCaps,
-      allocationColors
+      allocationColors,
+      emergencyFundMonths
     });
 
     if (!autoSaveReadyRef.current) {
@@ -639,6 +811,7 @@ const Portfolio = () => {
     allocationColors,
     allocationTargetsLoaded,
     investmentTargets,
+    emergencyFundMonths,
     session
   ]);
 
@@ -657,6 +830,7 @@ const Portfolio = () => {
         target_etf_pct: investmentTargets.etf,
         target_bond_pct: investmentTargets.bonds,
         target_emergency_pct: getPct("emergency"),
+        emergency_fund_months: emergencyFundMonths,
         rebalance_months: settings?.rebalance_months ?? 6
       });
 
@@ -670,14 +844,15 @@ const Portfolio = () => {
       }));
 
       const saved = await replaceAllocationTargets(itemsWithOrder);
-      localStorage.setItem(
-        localKey,
-        JSON.stringify({
-          items: allocationTargetItems,
-          colors: allocationColors,
-          caps: allocationCaps
-        })
-      );
+        localStorage.setItem(
+          localKey,
+          JSON.stringify({
+            items: allocationTargetItems,
+            colors: allocationColors,
+            caps: allocationCaps,
+            emergencyFundMonths
+          })
+        );
 
       if (!silent) {
         await refresh();
@@ -721,6 +896,10 @@ const Portfolio = () => {
     () => buildAccountBalances(accounts, transactions),
     [accounts, transactions]
   );
+  const burnRate = useMemo(
+    () => calculateMonthlyBurnRate(transactions, categories),
+    [transactions, categories]
+  );
   const emergencyFund = resolveEmergencyFundBalance(
     accountBalances,
     settings?.emergency_fund ?? 0
@@ -753,27 +932,104 @@ const Portfolio = () => {
     { label: "Crypto", value: cryptoValue },
     { label: "Asset Investimento", value: investmentTotalCurrent }
   ].filter((item) => Number.isFinite(item.value) && item.value > 0);
-  const capPctByKey = useMemo(() => {
-    const caps = new Map<string, number>();
-    Object.entries(allocationCaps).forEach(([key, cap]) => {
-      if (!cap.enabled) return;
-      const pctRaw = Number(cap.pct);
-      const pctCap =
-        Number.isFinite(pctRaw) && pctRaw > 0 ? Math.min(100, pctRaw) : null;
-      const valueRaw = Number(cap.value);
-      const valueCap =
-        targetTotal > 0 && Number.isFinite(valueRaw) && valueRaw > 0
-          ? Math.min(100, (valueRaw / targetTotal) * 100)
-          : null;
-      const maxPct =
-        pctCap !== null && valueCap !== null
-          ? Math.min(pctCap, valueCap)
-          : pctCap ?? valueCap;
-      if (maxPct === null) return;
-      caps.set(key, maxPct);
+  const allocationTargetsMeta = useMemo(() => {
+    const currentByKey = new Map<string, number>();
+    allocationTargetItems.forEach((item) => {
+      const current =
+        item.key === "cash"
+          ? cashAvailable
+          : item.key === "emergency"
+            ? emergencyFund
+            : item.key === "investments"
+              ? investmentTotalCurrent
+              : holdingsByClass.get(item.key) ?? 0;
+      currentByKey.set(item.key, current);
     });
-    return caps;
-  }, [allocationCaps, targetTotal]);
+
+    const overrideByKey = new Map<
+      string,
+      { mode: "rel" | "set" | "off"; value: number }
+    >();
+    Object.entries(allocationCaps).forEach(([key, cap]) => {
+      const mode = cap.mode ?? "rel";
+      const parsed = parseNumberInput(cap.value ?? "");
+      const value = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+      overrideByKey.set(key, { mode, value });
+    });
+    const emergencyAutoTarget =
+      emergencyFundMonths > 0 && burnRate > 0 ? burnRate * emergencyFundMonths : null;
+    if (emergencyAutoTarget !== null) {
+      overrideByKey.set("emergency", { mode: "set", value: emergencyAutoTarget });
+    }
+
+    const relTotal = allocationTargetItems.reduce((sum, item) => {
+      const mode = overrideByKey.get(item.key)?.mode ?? "rel";
+      if (mode !== "rel") return sum;
+      return sum + (Number.isFinite(item.pct) ? item.pct : 0);
+    }, 0);
+
+    let setTotal = 0;
+    let offTotal = 0;
+    allocationTargetItems.forEach((item) => {
+      const override = overrideByKey.get(item.key);
+      if (override?.mode === "set") {
+        setTotal += override.value;
+      } else if (override?.mode === "off") {
+        offTotal += currentByKey.get(item.key) ?? 0;
+      }
+    });
+
+    const remainingTotal = Math.max(targetTotal - setTotal - offTotal, 0);
+    const targetByKey = new Map<string, number>();
+
+    allocationTargetItems.forEach((item) => {
+      const override = overrideByKey.get(item.key);
+      const mode = override?.mode ?? "rel";
+      const current = currentByKey.get(item.key) ?? 0;
+      if (mode === "set") {
+        targetByKey.set(item.key, override?.value ?? 0);
+        return;
+      }
+      if (mode === "off") {
+        targetByKey.set(item.key, current);
+        return;
+      }
+      const rawPct = Number.isFinite(item.pct) ? item.pct : 0;
+      const normalizedPct = relTotal > 0 ? (rawPct / relTotal) * 100 : 0;
+      const target = (normalizedPct / 100) * remainingTotal;
+      targetByKey.set(item.key, target);
+    });
+
+    const effectivePctByKey = new Map<string, number>();
+    if (targetTotal > 0) {
+      targetByKey.forEach((target, key) => {
+        effectivePctByKey.set(key, (target / targetTotal) * 100);
+      });
+    } else {
+      allocationTargetItems.forEach((item) => effectivePctByKey.set(item.key, 0));
+    }
+
+    return {
+      currentByKey,
+      targetByKey,
+      effectivePctByKey,
+      relativePercentTotal: relTotal,
+      remainingTotal,
+      setTotal,
+      offTotal,
+      emergencyAutoTarget
+    };
+  }, [
+    allocationTargetItems,
+    allocationCaps,
+    targetTotal,
+    cashAvailable,
+    emergencyFund,
+    investmentTotalCurrent,
+    holdingsByClass,
+    burnRate,
+    emergencyFundMonths
+  ]);
 
   useEffect(() => {
     if (!allocationTargetsLoaded) return;
@@ -804,73 +1060,10 @@ const Portfolio = () => {
   ];
   const coreInvestmentTotal = etfValue + bondValue;
 
-  const effectiveTargetPctByKey = useMemo(() => {
-    const round1 = (value: number) => Number(value.toFixed(1));
-    const items = allocationTargetItems.map((item) => {
-      const raw = Number.isFinite(item.pct) ? item.pct : 0;
-      const cap = capPctByKey.get(item.key);
-      const max = cap ?? 100;
-      return {
-        key: item.key,
-        pct: Math.min(raw, max),
-        max
-      };
-    });
-
-    let total = items.reduce((sum, item) => sum + item.pct, 0);
-    if (total > 100 && total > 0) {
-      const factor = 100 / total;
-      items.forEach((item) => {
-        item.pct = item.pct * factor;
-      });
-      total = 100;
-    }
-
-    items.forEach((item) => {
-      item.pct = round1(item.pct);
-    });
-
-    let remaining = 100 - items.reduce((sum, item) => sum + item.pct, 0);
-    if (remaining > 0.05) {
-      for (let i = 0; i < 3; i += 1) {
-        const adjustable = items.filter((item) => item.pct + 0.05 < item.max);
-        if (adjustable.length === 0) break;
-        const adjustableTotal = adjustable.reduce((sum, item) => sum + item.pct, 0);
-        let allocated = 0;
-        adjustable.forEach((item, index) => {
-          const share =
-            adjustableTotal > 0
-              ? (item.pct / adjustableTotal) * remaining
-              : remaining / adjustable.length;
-          if (index === adjustable.length - 1) {
-            const next = Math.min(item.pct + (remaining - allocated), item.max);
-            item.pct = round1(next);
-          } else {
-            const next = Math.min(item.pct + share, item.max);
-            allocated += Math.max(0, next - item.pct);
-            item.pct = round1(next);
-          }
-        });
-        remaining = 100 - items.reduce((sum, item) => sum + item.pct, 0);
-        if (remaining <= 0.05) break;
-      }
-    }
-
-    return new Map(items.map((item) => [item.key, item.pct]));
-  }, [allocationTargetItems, capPctByKey]);
-
   const generalGap = allocationTargetItems
     .map((item) => {
-      const current =
-        item.key === "cash"
-          ? cashAvailable
-          : item.key === "emergency"
-            ? emergencyFund
-            : item.key === "investments"
-              ? investmentTotalCurrent
-              : holdingsByClass.get(item.key) ?? 0;
-      const effectivePct = effectiveTargetPctByKey.get(item.key) ?? item.pct;
-      const target = targetTotal > 0 ? (effectivePct / 100) * targetTotal : 0;
+      const current = allocationTargetsMeta.currentByKey.get(item.key) ?? 0;
+      const target = allocationTargetsMeta.targetByKey.get(item.key) ?? 0;
       return {
         label: item.label,
         current,
@@ -895,17 +1088,69 @@ const Portfolio = () => {
     }
   ].filter((item) => item.current !== 0 || item.target !== 0);
 
-  const allocationPercentTotal = allocationTargetItems.reduce(
-    (sum, item) => sum + (Number.isFinite(item.pct) ? item.pct : 0),
-    0
-  );
-  const allocationPercentDisplay = Number(allocationPercentTotal.toFixed(1));
+  const effectivePercentTotal = allocationTargetItems.reduce((sum, item) => {
+    const pct = allocationTargetsMeta.effectivePctByKey.get(item.key) ?? 0;
+    return sum + (Number.isFinite(pct) ? pct : 0);
+  }, 0);
+  const allocationPercentDisplay = Number(effectivePercentTotal.toFixed(1));
   const allocationPercentWithinRange =
-    Math.abs(allocationPercentTotal - 100) <= 0.1;
+    targetTotal > 0 ? Math.abs(effectivePercentTotal - 100) <= 0.1 : true;
+  const allocationOverflow =
+    allocationTargetsMeta.setTotal + allocationTargetsMeta.offTotal - targetTotal;
+  const relativeItemCount = useMemo(
+    () =>
+      allocationTargetItems.filter(
+        (item) => (allocationCaps[item.key]?.mode ?? "rel") === "rel"
+      ).length,
+    [allocationTargetItems, allocationCaps]
+  );
+  const remainingPctTotal =
+    targetTotal > 0
+      ? (allocationTargetsMeta.remainingTotal / targetTotal) * 100
+      : 0;
   const activeCapsCount = useMemo(
-    () => Object.values(allocationCaps).filter((cap) => cap.enabled).length,
+    () => Object.values(allocationCaps).filter((cap) => cap.mode !== "rel").length,
     [allocationCaps]
   );
+  const tradePreview = useMemo(() => {
+    if (!tradeHolding) return null;
+    const quantity = Number(tradeForm.quantity);
+    const price = Number(tradeForm.price);
+    const fees = tradeForm.fees ? Number(tradeForm.fees) : 0;
+    if (!Number.isFinite(quantity) || !Number.isFinite(price)) {
+      return {
+        quantity: 0,
+        price: 0,
+        fees: Number.isFinite(fees) ? fees : 0,
+        tradeValue: 0,
+        newQuantity: tradeHolding.quantity,
+        newTotalCap: tradeHolding.total_cap,
+        newAvgCost: tradeHolding.avg_cost,
+        newCurrentValue: tradeHolding.current_value
+      };
+    }
+    const safeFees = Number.isFinite(fees) ? Math.max(fees, 0) : 0;
+    const tradeValue = quantity * price;
+    const signed = tradeSide === "buy" ? 1 : -1;
+    const newQuantity = Math.max(tradeHolding.quantity + signed * quantity, 0);
+    const costReduction = tradeHolding.avg_cost * quantity;
+    const newTotalCap =
+      tradeSide === "buy"
+        ? tradeHolding.total_cap + tradeValue + safeFees
+        : Math.max(tradeHolding.total_cap - costReduction, 0);
+    const newAvgCost = newQuantity > 0 ? newTotalCap / newQuantity : 0;
+    const newCurrentValue = newQuantity > 0 ? newQuantity * price : 0;
+    return {
+      quantity,
+      price,
+      fees: safeFees,
+      tradeValue,
+      newQuantity,
+      newTotalCap,
+      newAvgCost,
+      newCurrentValue
+    };
+  }, [tradeForm.fees, tradeForm.price, tradeForm.quantity, tradeHolding, tradeSide]);
 
 
   const getClassTargetTotal = (label: string, fallback: number) => {
@@ -920,9 +1165,8 @@ const Portfolio = () => {
         ? (investmentTargets.bonds / 100) * coreInvestmentTotal
         : fallback;
     }
-    if (targetTotal <= 0) return fallback;
-    const pct = effectiveTargetPctByKey.get(label) ?? allocationPctByKey.get(label);
-    if (pct !== undefined) return (pct / 100) * targetTotal;
+    const target = allocationTargetsMeta.targetByKey.get(label);
+    if (target !== undefined) return target;
     return fallback;
   };
 
@@ -942,6 +1186,34 @@ const Portfolio = () => {
     return { entries, total };
   };
 
+  const investmentTargetDetailData = useMemo(() => {
+    if (!investmentFocusTarget) return [];
+    const items = holdings.filter(
+      (item) => item.asset_class === investmentFocusTarget
+    );
+    if (items.length === 0) return [];
+    const targetModel = buildInternalTargets(items);
+    const byId = new Map(items.map((item) => [item.id, item]));
+    return targetModel.entries.map((entry) => {
+      const holding = byId.get(entry.id);
+      return {
+        label: holding ? formatHoldingLabel(holding) : entry.id,
+        value: entry.target
+      };
+    });
+  }, [holdings, investmentFocusTarget, targetDrafts]);
+  const investmentCurrentDetailData = useMemo(() => {
+    if (!investmentFocusCurrent) return [];
+    const items = holdings.filter(
+      (item) => item.asset_class === investmentFocusCurrent
+    );
+    const total = items.reduce((sum, item) => sum + item.current_value, 0);
+    return items.map((item) => ({
+      label: formatHoldingLabel(item),
+      value: total > 0 ? (item.current_value / total) * 100 : 0
+    }));
+  }, [holdings, investmentFocusCurrent]);
+
   const handleSaveGroupTargets = async (
     items: Holding[],
     targetById: Map<string, number>
@@ -952,7 +1224,9 @@ const Portfolio = () => {
       await Promise.all(
         items.map((item) =>
           updateHolding(item.id, {
-            target_pct: Number(targetById.get(item.id) ?? 0)
+            target_pct: Number.isFinite(targetById.get(item.id))
+              ? Number(targetById.get(item.id))
+              : 0
           })
         )
       );
@@ -1140,21 +1414,81 @@ const Portfolio = () => {
             ) : (
               <div className="allocation-investment-grid">
                 <div className="allocation-subchart">
-                  <strong>Target</strong>
-                  <p className="section-subtitle">ETF + Obbligazioni</p>
+                  <div className="allocation-subchart-header">
+                    <div>
+                      <strong>
+                        {investmentFocusTarget
+                          ? `Target - ${investmentFocusTarget}`
+                          : "Target"}
+                      </strong>
+                      <p className="section-subtitle">
+                        {investmentFocusTarget
+                          ? "Pesi interni target"
+                          : "ETF + Obbligazioni"}
+                      </p>
+                    </div>
+                    {investmentFocusTarget && (
+                      <button
+                        className="button ghost small"
+                        type="button"
+                        onClick={() => setInvestmentFocusTarget(null)}
+                      >
+                        Indietro
+                      </button>
+                    )}
+                  </div>
                   <DonutChart
-                    data={investmentTargetData}
+                    data={
+                      investmentFocusTarget
+                        ? investmentTargetDetailData
+                        : investmentTargetData
+                    }
                     valueFormatter={(value) => `${value.toFixed(1)}%`}
                     colors={allocationColors}
+                    onSelect={
+                      investmentFocusTarget ? undefined : handleInvestmentTargetSelect
+                    }
                   />
                 </div>
                 <div className="allocation-subchart">
-                  <strong>Attuale</strong>
-                  <p className="section-subtitle">Valori correnti ETF + Obbligazioni</p>
+                  <div className="allocation-subchart-header">
+                    <div>
+                      <strong>
+                        {investmentFocusCurrent
+                          ? `Attuale - ${investmentFocusCurrent}`
+                          : "Attuale"}
+                      </strong>
+                      <p className="section-subtitle">
+                        {investmentFocusCurrent
+                          ? "Valori correnti per holding"
+                          : "Valori correnti ETF + Obbligazioni"}
+                      </p>
+                    </div>
+                    {investmentFocusCurrent && (
+                      <button
+                        className="button ghost small"
+                        type="button"
+                        onClick={() => setInvestmentFocusCurrent(null)}
+                      >
+                        Indietro
+                      </button>
+                    )}
+                  </div>
                   <DonutChart
-                    data={investmentCurrentData}
-                    valueFormatter={(value) => formatCurrencySafe(value, currency)}
+                    data={
+                      investmentFocusCurrent
+                        ? investmentCurrentDetailData
+                        : investmentCurrentData
+                    }
+                    valueFormatter={(value) =>
+                      investmentFocusCurrent
+                        ? `${value.toFixed(1)}%`
+                        : formatCurrencySafe(value, currency)
+                    }
                     colors={allocationColors}
+                    onSelect={
+                      investmentFocusCurrent ? undefined : handleInvestmentCurrentSelect
+                    }
                   />
                 </div>
               </div>
@@ -1226,68 +1560,84 @@ const Portfolio = () => {
                     colorKey: item.label,
                     kind: item.kind
                   }))
-                ].map((item) => (
-                  <div className="allocation-row" key={`allocation-${item.key}`}>
-                    <div className="allocation-label">
-                      <input
-                        className="color-input"
-                        type="color"
-                        value={allocationColors[item.colorKey] ?? "#94a3b8"}
-                        onChange={(event) =>
-                          setAllocationColors((prev) => ({
-                            ...prev,
-                            [item.colorKey]: event.target.value
-                          }))
-                        }
-                        aria-label={`Colore ${item.label}`}
-                      />
-                      <strong>{item.label}</strong>
-                    </div>
-                    <input
-                      className="allocation-slider"
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="0.1"
-                      value={allocationPctByKey.get(item.key) ?? 0}
-                      onChange={(event) =>
-                        handleAllocationChange(item.key, Number(event.target.value))
-                      }
-                    />
-                    <div className="allocation-input">
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.1"
-                        value={(allocationPctByKey.get(item.key) ?? 0).toFixed(1)}
-                        onChange={(event) =>
-                          handleAllocationChange(item.key, Number(event.target.value))
-                        }
-                      />
-                      <span>%</span>
-                    </div>
-                    {item.kind === "asset" &&
-                      item.key !== "ETF" &&
-                      item.key !== "Obbligazioni" &&
-                      item.key !== "investments" && (
-                        <button
-                          className="button ghost small"
-                          type="button"
-                          onClick={() =>
-                            setAllocationTargetItems((prev) =>
-                              prev.filter((target) => target.key !== item.key)
-                            )
+                ].map((item) => {
+                  const mode = allocationCaps[item.key]?.mode ?? "rel";
+                  const isRelative = mode === "rel";
+                  const maxPct = isRelative ? remainingPctTotal : 100;
+                  const displayPct =
+                    allocationTargetsMeta.effectivePctByKey.get(item.key) ?? 0;
+                  const canEdit =
+                    isRelative && relativeItemCount > 1 && remainingPctTotal > 0;
+                  return (
+                    <div className="allocation-row" key={`allocation-${item.key}`}>
+                      <div className="allocation-label">
+                        <input
+                          className="color-input"
+                          type="color"
+                          value={allocationColors[item.colorKey] ?? "#94a3b8"}
+                          onChange={(event) =>
+                            setAllocationColors((prev) => ({
+                              ...prev,
+                              [item.colorKey]: event.target.value
+                            }))
                           }
-                        >
-                          Rimuovi
-                        </button>
-                      )}
-                  </div>
-                ))}
+                          aria-label={`Colore ${item.label}`}
+                        />
+                        <strong>{item.label}</strong>
+                      </div>
+                      <input
+                        className="allocation-slider"
+                        type="range"
+                        min="0"
+                        max={maxPct}
+                        step="0.1"
+                        value={displayPct}
+                        disabled={!canEdit}
+                        onChange={(event) =>
+                          handleTargetPercentChange(item.key, Number(event.target.value))
+                        }
+                      />
+                      <div className="allocation-input">
+                        <input
+                          type="number"
+                          min="0"
+                          max={maxPct}
+                          step="0.1"
+                          value={displayPct.toFixed(1)}
+                          disabled={!canEdit}
+                          onChange={(event) =>
+                            handleTargetPercentChange(item.key, Number(event.target.value))
+                          }
+                        />
+                        <span>%</span>
+                      </div>
+                      {item.kind === "asset" &&
+                        item.key !== "ETF" &&
+                        item.key !== "Obbligazioni" &&
+                        item.key !== "investments" && (
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() =>
+                              setAllocationTargetItems((prev) =>
+                                prev.filter((target) => target.key !== item.key)
+                              )
+                            }
+                          >
+                            Rimuovi
+                          </button>
+                        )}
+                    </div>
+                  );
+                })}
                 <div className="allocation-total">
-                  Totale percentuali: {allocationPercentDisplay}%
+                  Totale percentuali (effettive): {allocationPercentDisplay}%
                 </div>
+                {relativeItemCount <= 1 && remainingPctTotal > 0 && (
+                  <span className="section-subtitle">
+                    Con un solo asset in Rel, il target prende il restante.
+                  </span>
+                )}
                 <div className="allocation-cap">
                   <button
                     className="cap-trigger"
@@ -1295,9 +1645,9 @@ const Portfolio = () => {
                     onClick={() => setCapsModalOpen(true)}
                   >
                     <div>
-                      <strong>Limiti massimi per asset</strong>
+                      <strong>Stato target per asset</strong>
                       <span className="section-subtitle">
-                        Gestisci i tetti in valore o percentuale.
+                        Scegli tra relativo, set fisso o off.
                       </span>
                     </div>
                     <span className="cap-badge">
@@ -1313,7 +1663,12 @@ const Portfolio = () => {
                 </div>
                 {!allocationPercentWithinRange && (
                   <div className="notice">
-                    Consiglio: porta il totale al 100% per un ribilanciamento corretto.
+                    {allocationOverflow > 0
+                      ? `I valori Set/Off superano il totale di ${formatCurrencySafe(
+                          allocationOverflow,
+                          currency
+                        )}.`
+                      : "Consiglio: porta le percentuali effettive al 100% per un ribilanciamento corretto."}
                   </div>
                 )}
               </>
@@ -1436,9 +1791,10 @@ const Portfolio = () => {
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h3>Limiti massimi per asset</h3>
+                <h3>Target avanzati per asset</h3>
                 <p className="section-subtitle">
-                  Imposta un tetto in valore o percentuale per ogni classe.
+                  Rel usa le percentuali, Set blocca un valore fisso, Off congela
+                  l'asset al valore attuale.
                 </p>
               </div>
               <button
@@ -1449,78 +1805,266 @@ const Portfolio = () => {
                 Chiudi
               </button>
             </div>
+            <div className="cap-emergency-config">
+              <div>
+                <strong>Fondo emergenza</strong>
+                <span className="section-subtitle">
+                  Target automatico = burn rate x mesi selezionati.
+                </span>
+              </div>
+              <select
+                className="select cap-months"
+                value={emergencyFundMonths}
+                onChange={(event) => setEmergencyFundMonths(Number(event.target.value))}
+              >
+                <option value={6}>6 mesi</option>
+                <option value={9}>9 mesi</option>
+                <option value={12}>12 mesi</option>
+              </select>
+              <div className="cap-emergency-meta">
+                {burnRate > 0 && allocationTargetsMeta.emergencyAutoTarget !== null ? (
+                  <span className="section-subtitle">
+                    Burn rate: {formatCurrencySafe(burnRate, currency)} • Target:{" "}
+                    {formatCurrencySafe(
+                      allocationTargetsMeta.emergencyAutoTarget,
+                      currency
+                    )}
+                  </span>
+                ) : (
+                  <span className="section-subtitle">
+                    Burn rate assente: inserisci un valore Set manuale.
+                  </span>
+                )}
+              </div>
+            </div>
             <div className="cap-grid">
               {allocationTargetItems.map((item) => {
                 const cap = allocationCaps[item.key] ?? {
-                  enabled: false,
+                  mode: "rel",
                   value: "",
                   pct: ""
                 };
+                const isEmergencyAuto =
+                  item.key === "emergency" &&
+                  allocationTargetsMeta.emergencyAutoTarget !== null;
+                const mode = isEmergencyAuto ? "set" : cap.mode;
+                const value = isEmergencyAuto
+                  ? allocationTargetsMeta.emergencyAutoTarget
+                  : cap.value;
                 return (
                   <div className="cap-row" key={`cap-${item.key}`}>
                     <div className="cap-label">
                       <span>{item.label}</span>
                     </div>
-                    <label className="cap-toggle">
-                      <input
-                        type="checkbox"
-                        checked={cap.enabled}
-                        onChange={(event) =>
-                          setAllocationCaps((prev) => ({
-                            ...prev,
-                            [item.key]: {
-                              enabled: event.target.checked,
-                              value: prev[item.key]?.value ?? "",
-                              pct: prev[item.key]?.pct ?? ""
-                            }
-                          }))
-                        }
-                      />
-                      <span className="cap-switch" />
-                    </label>
+                    <select
+                      className="select cap-mode"
+                      value={mode}
+                      onChange={(event) => {
+                        const mode = event.target.value as AllocationCap["mode"];
+                        setAllocationCaps((prev) => ({
+                          ...prev,
+                          [item.key]: {
+                            mode,
+                            value: prev[item.key]?.value ?? "",
+                            pct: prev[item.key]?.pct ?? ""
+                          }
+                        }));
+                      }}
+                      disabled={isEmergencyAuto}
+                    >
+                      <option value="rel">Rel %</option>
+                      <option value="set">Set</option>
+                      <option value="off">Off</option>
+                    </select>
                     <div className="cap-input">
                       <input
                         type="number"
                         step="0.01"
-                        placeholder="Max valore"
-                        value={cap.value}
+                        placeholder="Valore fisso"
+                        value={value}
                         onChange={(event) =>
                           setAllocationCaps((prev) => ({
                             ...prev,
                             [item.key]: {
-                              enabled: prev[item.key]?.enabled ?? false,
+                              mode: prev[item.key]?.mode ?? "rel",
                               value: event.target.value,
                               pct: prev[item.key]?.pct ?? ""
                             }
                           }))
                         }
-                        disabled={!cap.enabled}
+                        disabled={mode !== "set" || isEmergencyAuto}
                       />
                       <span>{currency}</span>
-                    </div>
-                    <div className="cap-input cap-input-pct">
-                      <input
-                        type="number"
-                        step="0.1"
-                        placeholder="Max %"
-                        value={cap.pct}
-                        onChange={(event) =>
-                          setAllocationCaps((prev) => ({
-                            ...prev,
-                            [item.key]: {
-                              enabled: prev[item.key]?.enabled ?? false,
-                              value: prev[item.key]?.value ?? "",
-                              pct: event.target.value
-                            }
-                          }))
-                        }
-                        disabled={!cap.enabled}
-                      />
-                      <span>%</span>
                     </div>
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tradeHolding && (
+        <div className="modal-backdrop" onClick={closeTradeModal}>
+          <div className="modal-card trade-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3>
+                  {tradeSide === "buy" ? "Acquisto" : "Vendita"} -{" "}
+                  {formatHoldingLabel(tradeHolding)}
+                </h3>
+                <p className="section-subtitle">
+                  Aggiorna quantita e costo medio senza uscire dalla pagina.
+                </p>
+              </div>
+              <button
+                className="button ghost small"
+                type="button"
+                onClick={closeTradeModal}
+              >
+                Chiudi
+              </button>
+            </div>
+            <div className="trade-tabs">
+              <button
+                type="button"
+                className={`trade-tab ${tradeSide === "buy" ? "active buy" : ""}`}
+                onClick={() => setTradeSide("buy")}
+              >
+                Buy
+              </button>
+              <button
+                type="button"
+                className={`trade-tab ${tradeSide === "sell" ? "active sell" : ""}`}
+                onClick={() => setTradeSide("sell")}
+              >
+                Sell
+              </button>
+            </div>
+            <div className="trade-body">
+              <div className={`trade-panel ${tradeSide}`}>
+                <div className="trade-summary">
+                  <div>
+                    <span className="stat-label">Quantita attuale</span>
+                    <strong>{formatQuantity(tradeHolding.quantity)}</strong>
+                  </div>
+                  <div>
+                    <span className="stat-label">Valore attuale</span>
+                    <strong>
+                      {formatCurrencySafe(
+                        tradeHolding.current_value,
+                        tradeHolding.currency
+                      )}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="stat-label">Prezzo medio</span>
+                    <strong>
+                      {formatCurrencySafe(
+                        tradeHolding.avg_cost,
+                        tradeHolding.currency
+                      )}
+                    </strong>
+                  </div>
+                </div>
+                <form className="trade-form" onSubmit={handleTradeSubmit}>
+                  <div className="trade-field">
+                    <label>Quantita</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      value={tradeForm.quantity}
+                      onChange={(event) =>
+                        setTradeForm((prev) => ({
+                          ...prev,
+                          quantity: event.target.value
+                        }))
+                      }
+                      required
+                    />
+                  </div>
+                  <div className="trade-field">
+                    <label>Prezzo</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      value={tradeForm.price}
+                      onChange={(event) =>
+                        setTradeForm((prev) => ({
+                          ...prev,
+                          price: event.target.value
+                        }))
+                      }
+                      required
+                    />
+                  </div>
+                  <div className="trade-field">
+                    <label>Commissioni</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={tradeForm.fees}
+                      onChange={(event) =>
+                        setTradeForm((prev) => ({
+                          ...prev,
+                          fees: event.target.value
+                        }))
+                      }
+                    />
+                  </div>
+                  {tradePreview && (
+                    <div className="trade-preview">
+                      <div>
+                        <span className="stat-label">Totale operazione</span>
+                        <strong>
+                          {formatCurrencySafe(
+                            tradePreview.tradeValue +
+                              (tradeSide === "buy" ? tradePreview.fees : -tradePreview.fees),
+                            tradeHolding.currency
+                          )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="stat-label">Nuova quantita</span>
+                        <strong>{formatQuantity(tradePreview.newQuantity)}</strong>
+                      </div>
+                      <div>
+                        <span className="stat-label">Nuovo costo medio</span>
+                        <strong>
+                          {formatCurrencySafe(
+                            tradePreview.newAvgCost,
+                            tradeHolding.currency
+                          )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="stat-label">Nuovo valore</span>
+                        <strong>
+                          {formatCurrencySafe(
+                            tradePreview.newCurrentValue,
+                            tradeHolding.currency
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    className={`button ${tradeSide === "buy" ? "buy" : "sell"}`}
+                    type="submit"
+                    disabled={tradeLoading}
+                  >
+                    {tradeLoading
+                      ? "Salvataggio..."
+                      : tradeSide === "buy"
+                        ? "Conferma acquisto"
+                        : "Conferma vendita"}
+                  </button>
+                </form>
+              </div>
+              {tradeMessage && <div className="notice">{tradeMessage}</div>}
             </div>
           </div>
         </div>
@@ -1543,7 +2087,6 @@ const Portfolio = () => {
             {renderHoldingForm("Aggiorna", true, closeEdit)}
             {message && <div className="notice">{message}</div>}
             {priceMessage && <div className="notice">{priceMessage}</div>}
-            {tickerMessage && <div className="notice">{tickerMessage}</div>}
             {error && <div className="error">{error}</div>}
           </div>
         </div>
@@ -1555,7 +2098,6 @@ const Portfolio = () => {
           {renderHoldingForm("Aggiungi", false)}
           {message && <div className="notice">{message}</div>}
           {priceMessage && <div className="notice">{priceMessage}</div>}
-          {tickerMessage && <div className="notice">{tickerMessage}</div>}
           {error && <div className="error">{error}</div>}
         </div>
       )}
@@ -1628,6 +2170,9 @@ const Portfolio = () => {
                       const allocation = group.totalValue
                         ? item.current_value / group.totalValue
                         : 0;
+                      const totalShare = holdingsTotal
+                        ? item.current_value / holdingsTotal
+                        : 0;
                       const subtitle =
                         item.asset_class === "Liquidita"
                           ? "Liquidita disponibile"
@@ -1636,17 +2181,6 @@ const Portfolio = () => {
                               item.currency
                             )}`;
                       const ticker = extractTicker(item.name);
-                      const info = tickerInfo[item.id];
-                      const infoLine = info
-                        ? [
-                            info.assetType,
-                            info.exchange,
-                            info.country,
-                            info.currency
-                          ]
-                            .filter(Boolean)
-                            .join(" • ")
-                        : null;
                       return (
                         <div className="asset-item" key={item.id}>
                           <div className="asset-item-text">
@@ -1657,12 +2191,6 @@ const Portfolio = () => {
                             <span className="section-subtitle">{subtitle}</span>
                             {ticker && (
                               <span className="asset-subinfo">Ticker: {ticker}</span>
-                            )}
-                            {info?.name && (
-                              <span className="asset-subinfo">{info.name}</span>
-                            )}
-                            {infoLine && (
-                              <span className="asset-subinfo">{infoLine}</span>
                             )}
                           </div>
                           <div className="asset-item-metrics">
@@ -1679,7 +2207,13 @@ const Portfolio = () => {
                               </strong>
                             </div>
                             <div className="asset-item-metric">
-                              <span className="asset-item-label">Peso</span>
+                              <span className="asset-item-label">Peso totale</span>
+                              <strong className="asset-item-value">
+                                {formatPercentSafe(totalShare)}
+                              </strong>
+                            </div>
+                            <div className="asset-item-metric">
+                              <span className="asset-item-label">Peso classe</span>
                               <strong className="asset-item-value">
                                 {formatPercentSafe(allocation)}
                               </strong>
@@ -1700,14 +2234,15 @@ const Portfolio = () => {
                             >
                               {priceLoading === item.id ? "Live..." : "Live"}
                             </button>
-                            <button
-                              className="button ghost small"
-                              type="button"
-                              onClick={() => handleTickerInfo(item)}
-                              disabled={tickerLoading === item.id}
-                            >
-                              {tickerLoading === item.id ? "Info..." : "Info"}
-                            </button>
+                            {item.asset_class !== "Liquidita" && (
+                              <button
+                                className="button ghost small"
+                                type="button"
+                                onClick={() => openTradeModal(item, "buy")}
+                              >
+                                Buy/Sell
+                              </button>
+                            )}
                             <button
                               className="button ghost small"
                               type="button"

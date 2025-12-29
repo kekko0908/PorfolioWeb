@@ -4,12 +4,12 @@ import {
   buildAccountBalances,
   buildMonthlySeries,
   calculateCagr,
-  calculateNetWorth,
   calculateRoi,
   calculateSavingsRate,
   groupExpensesByCategory,
   groupHoldingsByAssetClass,
-  sumHoldingsCost
+  sumHoldingsCost,
+  sumHoldingsValue
 } from "../lib/metrics";
 import { formatCurrencySafe, formatPercentSafe } from "../lib/format";
 import { BarChart } from "../components/charts/BarChart";
@@ -26,11 +26,16 @@ const Analytics = () => {
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
   const savingsRate = calculateSavingsRate(transactions);
-  const netWorth = calculateNetWorth(holdings, transactions);
   const totalCap = sumHoldingsCost(holdings);
+  const capitalGain = sumHoldingsValue(holdings) - totalCap;
 
   const cashflowSeries = buildMonthlySeries(transactions, range);
   const accountBalances = buildAccountBalances(accounts, transactions);
+  const netWorth =
+    sumHoldingsValue(holdings) +
+    accountBalances
+      .filter((account) => account.type !== "credit")
+      .reduce((sum, account) => sum + account.balance, 0);
   const cashTotal = accountBalances.reduce((sum, item) => sum + item.balance, 0);
   const allocationBase = groupHoldingsByAssetClass(holdings);
   const allocation =
@@ -92,6 +97,17 @@ const Analytics = () => {
           <span className="stat-label">Capitale investito</span>
           <span className="stat-value">{formatCurrencySafe(totalCap, currency)}</span>
           <span className="stat-trend">Totale allocato</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Capital Gain</span>
+          <span
+            className={`stat-value ${
+              capitalGain >= 0 ? "positive" : "negative"
+            }`}
+          >
+            {formatCurrencySafe(capitalGain, currency)}
+          </span>
+          <span className="stat-trend">Differenza valore vs capitale</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">Savings Rate</span>

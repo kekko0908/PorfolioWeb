@@ -6,13 +6,13 @@ import {
   buildPortfolioSeries,
   calculateCagr,
   calculateMonthlyBurnRate,
-  calculateNetWorth,
   calculateRoi,
   calculateSavingsRate,
   groupExpensesByCategory,
   groupHoldingsByAssetClass,
   resolveEmergencyFundBalance,
-  sumHoldingsCost
+  sumHoldingsCost,
+  sumHoldingsValue
 } from "../lib/metrics";
 import {
   formatCurrencySafe,
@@ -37,21 +37,32 @@ const Dashboard = () => {
     usePortfolioData();
   const [allocationFocus, setAllocationFocus] = useState<string | null>(null);
   const currency = settings?.base_currency ?? "EUR";
-  const netWorth = calculateNetWorth(holdings, transactions);
   const savingsRate = calculateSavingsRate(transactions);
   const burnRate = calculateMonthlyBurnRate(transactions, categories);
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
   const totalCap = sumHoldingsCost(holdings);
+  const capitalGain = sumHoldingsValue(holdings) - totalCap;
 
   const cashflowSeries = buildMonthlySeries(transactions, 6);
   const portfolioSeries = buildPortfolioSeries(holdings, 12);
   const accountBalances = buildAccountBalances(accounts, transactions);
+  const netWorth =
+    sumHoldingsValue(holdings) +
+    accountBalances
+      .filter((account) => account.type !== "credit")
+      .reduce((sum, account) => sum + account.balance, 0);
   const emergencyFund = resolveEmergencyFundBalance(
     accountBalances,
     settings?.emergency_fund ?? 0
   );
   const runway = burnRate > 0 ? emergencyFund / burnRate : 0;
+  const runwayLabel =
+    burnRate > 0
+      ? `${formatRatio(runway)} mesi`
+      : emergencyFund > 0
+        ? "Illimitato"
+        : "N/D";
   const cashTotal = accountBalances.reduce((sum, item) => sum + item.balance, 0);
   const allocationBase = groupHoldingsByAssetClass(holdings);
   const allocation =
@@ -128,15 +139,24 @@ const Dashboard = () => {
         </div>
         <div className="stat-card">
           <span className="stat-label">Runway</span>
-          <span className="stat-value">
-            {runway > 0 ? `${formatRatio(runway)} mesi` : "N/D"}
-          </span>
+          <span className="stat-value">{runwayLabel}</span>
           <span className="stat-trend">Copertura fondo emergenza</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">ROI</span>
           <span className="stat-value">{formatPercentSafe(roi)}</span>
           <span className="stat-trend">Rendimento totale holdings</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Capital Gain</span>
+          <span
+            className={`stat-value ${
+              capitalGain >= 0 ? "positive" : "negative"
+            }`}
+          >
+            {formatCurrencySafe(capitalGain, currency)}
+          </span>
+          <span className="stat-trend">Differenza tra valore e capitale</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">CAGR</span>
