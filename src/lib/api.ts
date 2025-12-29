@@ -29,6 +29,14 @@ const isMissingRelationError = (error: unknown) => {
   return false;
 };
 
+const isMissingColumnError = (error: unknown, column: string) => {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { message?: string };
+  if (typeof err.message !== "string") return false;
+  if (!/schema cache/i.test(err.message)) return false;
+  return err.message.includes(`'${column}'`);
+};
+
 export const fetchCategories = async (): Promise<Category[]> => {
   const { data, error } = await supabase
     .from("categories")
@@ -260,6 +268,15 @@ export const upsertSettings = async (
   const { error } = await supabase.from("settings").upsert(payload, {
     onConflict: "user_id"
   });
+  if (!error) return;
+  if (isMissingColumnError(error, "emergency_fund_months")) {
+    const { emergency_fund_months: _ignored, ...fallback } = payload;
+    const { error: fallbackError } = await supabase.from("settings").upsert(fallback, {
+      onConflict: "user_id"
+    });
+    handleError(fallbackError);
+    return;
+  }
   handleError(error);
 };
 

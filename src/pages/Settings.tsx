@@ -89,7 +89,6 @@ const Settings = () => {
   const { accounts, categories, transactions, holdings, settings, refresh, loading, error } =
     usePortfolioData();
   const [baseCurrency, setBaseCurrency] = useState("EUR");
-  const [message, setMessage] = useState<string | null>(null);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [accountForm, setAccountForm] = useState(emptyAccountForm);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -271,24 +270,6 @@ const Settings = () => {
     }));
   }, [baseCurrency, editingAccount]);
 
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    setMessage(null);
-    if (!session) return;
-
-    try {
-      await upsertSettings({
-        user_id: session.user.id,
-        base_currency: baseCurrency as "EUR" | "USD",
-        emergency_fund: settings?.emergency_fund ?? 0
-      });
-      await refresh();
-      setMessage("Impostazioni aggiornate.");
-    } catch (err) {
-      setMessage((err as Error).message);
-    }
-  };
-
   const handleProfileSave = async (event: FormEvent) => {
     event.preventDefault();
     setProfileMessage(null);
@@ -347,7 +328,14 @@ const Settings = () => {
         false
       );
 
-      setProfileMessage("Profilo aggiornato.");
+      await upsertSettings({
+        user_id: session.user.id,
+        base_currency: baseCurrency as "EUR" | "USD",
+        emergency_fund: settings?.emergency_fund ?? 0
+      });
+      await refresh();
+
+      setProfileMessage("Profilo e impostazioni aggiornate.");
     } catch (err) {
       setProfileMessage((err as Error).message);
     }
@@ -896,7 +884,7 @@ const Settings = () => {
               }}
             />
             <button className="button" type="submit">
-              Salva profilo
+              Salva tutto
             </button>
           </div>
         </form>
@@ -1186,7 +1174,7 @@ const Settings = () => {
       </div>
 
       <div className="card">
-        <form className="form-grid" onSubmit={handleSubmit}>
+        <div className="form-grid">
           <select
             className="select"
             value={baseCurrency}
@@ -1195,11 +1183,7 @@ const Settings = () => {
             <option value="EUR">EUR</option>
             <option value="USD">USD</option>
           </select>
-          <button className="button" type="submit">
-            Salva impostazioni
-          </button>
-        </form>
-        {message && <div className="notice">{message}</div>}
+        </div>
         {error && <div className="error">{error}</div>}
       </div>
 

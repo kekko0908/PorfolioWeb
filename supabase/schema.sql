@@ -77,6 +77,7 @@ create table if not exists public.settings (
   user_id uuid not null unique references auth.users on delete cascade,
   base_currency text not null check (base_currency in ('EUR', 'USD')) default 'EUR',
   emergency_fund numeric(14, 2) not null default 0,
+  emergency_fund_months integer default 6,
   cash_target_cap numeric(14, 2),
   target_cash_pct numeric(5, 2) not null default 20,
   target_etf_pct numeric(5, 2) not null default 50,
