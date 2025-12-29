@@ -32,7 +32,7 @@ type AllocationTargetItem = {
 };
 
 type AllocationCap = {
-  mode: "rel" | "set" | "off";
+  mode: "rel" | "set" | "off" | "burn";
   value: string;
   pct: string;
 };
@@ -261,7 +261,7 @@ const Portfolio = () => {
         const hasValue = rawValue.trim() !== "" && Number.isFinite(parsedValue);
         const legacyEnabled = isLegacyCap(cap) && Boolean(cap.enabled);
         const mode =
-          rawMode === "set" || rawMode === "off" || rawMode === "rel"
+          rawMode === "set" || rawMode === "off" || rawMode === "rel" || rawMode === "burn"
             ? rawMode
             : legacyEnabled && hasValue
               ? "set"
@@ -428,7 +428,8 @@ const Portfolio = () => {
         if (
           next[item.key].mode !== "rel" &&
           next[item.key].mode !== "set" &&
-          next[item.key].mode !== "off"
+          next[item.key].mode !== "off" &&
+          next[item.key].mode !== "burn"
         ) {
           next[item.key].mode = "rel";
         }
@@ -955,21 +956,26 @@ const Portfolio = () => {
       currentByKey.set(item.key, current);
     });
 
+    const emergencyAutoTarget =
+      emergencyFundMonths > 0 && burnRate > 0 ? burnRate * emergencyFundMonths : null;
     const overrideByKey = new Map<
       string,
       { mode: "rel" | "set" | "off"; value: number }
     >();
     Object.entries(allocationCaps).forEach(([key, cap]) => {
       const mode = cap.mode ?? "rel";
+      if (mode === "burn") {
+        if (key === "emergency" && emergencyAutoTarget !== null) {
+          overrideByKey.set(key, { mode: "set", value: emergencyAutoTarget });
+        } else {
+          overrideByKey.set(key, { mode: "set", value: 0 });
+        }
+        return;
+      }
       const parsed = parseNumberInput(cap.value ?? "");
       const value = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
       overrideByKey.set(key, { mode, value });
     });
-    const emergencyAutoTarget =
-      emergencyFundMonths > 0 && burnRate > 0 ? burnRate * emergencyFundMonths : null;
-    if (emergencyAutoTarget !== null) {
-      overrideByKey.set("emergency", { mode: "set", value: emergencyAutoTarget });
-    }
 
     const relTotal = allocationTargetItems.reduce((sum, item) => {
       const mode = overrideByKey.get(item.key)?.mode ?? "rel";
@@ -1656,7 +1662,7 @@ const Portfolio = () => {
                     <div>
                       <strong>Stato target per asset</strong>
                       <span className="section-subtitle">
-                        Scegli tra relativo, set fisso o off.
+                        Rel, Set, Off e Burn rate per il fondo emergenza.
                       </span>
                     </div>
                     <span className="cap-badge">
@@ -1800,13 +1806,13 @@ const Portfolio = () => {
 
       {capsModalOpen && (
         <div className="modal-backdrop" onClick={() => setCapsModalOpen(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-card modal-dark" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <h3>Target avanzati per asset</h3>
                 <p className="section-subtitle">
                   Rel usa le percentuali, Set blocca un valore fisso, Off congela
-                  l'asset al valore attuale.
+                  l'asset al valore attuale. Burn rate usa il tasso di spesa mensile.
                 </p>
               </div>
               <button
@@ -1844,7 +1850,7 @@ const Portfolio = () => {
                   </span>
                 ) : (
                   <span className="section-subtitle">
-                    Burn rate assente: inserisci un valore Set manuale.
+                    Burn rate assente: scegli Set o Rel per impostare manualmente.
                   </span>
                 )}
               </div>
@@ -1856,13 +1862,15 @@ const Portfolio = () => {
                   value: "",
                   pct: ""
                 };
-                const isEmergencyAuto =
-                  item.key === "emergency" &&
-                  allocationTargetsMeta.emergencyAutoTarget !== null;
-                const mode = isEmergencyAuto ? "set" : cap.mode;
-                const value = isEmergencyAuto
-                  ? allocationTargetsMeta.emergencyAutoTarget ?? ""
-                  : cap.value;
+                const isEmergency = item.key === "emergency";
+                const rawMode = cap.mode ?? "rel";
+                const mode = !isEmergency && rawMode === "burn" ? "rel" : rawMode;
+                const isBurnMode = isEmergency && mode === "burn";
+                const burnValue =
+                  allocationTargetsMeta.emergencyAutoTarget !== null
+                    ? String(Number(allocationTargetsMeta.emergencyAutoTarget.toFixed(2)))
+                    : "";
+                const value = isBurnMode ? burnValue : cap.value;
                 return (
                   <div className="cap-row" key={`cap-${item.key}`}>
                     <div className="cap-label">
@@ -1882,11 +1890,11 @@ const Portfolio = () => {
                           }
                         }));
                       }}
-                      disabled={isEmergencyAuto}
                     >
                       <option value="rel">Rel %</option>
                       <option value="set">Set</option>
                       <option value="off">Off</option>
+                      {isEmergency && <option value="burn">Burn rate</option>}
                     </select>
                     <div className="cap-input">
                       <input
@@ -1904,9 +1912,9 @@ const Portfolio = () => {
                             }
                           }))
                         }
-                        disabled={mode !== "set" || isEmergencyAuto}
+                        disabled={mode !== "set"}
                       />
-                      <span>{currency}</span>
+                      <span>{isBurnMode ? "EUR" : currency}</span>
                     </div>
                   </div>
                 );
@@ -2084,7 +2092,7 @@ const Portfolio = () => {
 
       {editing && (
         <div className="modal-backdrop" onClick={closeEdit}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-card modal-dark" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <h3>Modifica holding</h3>

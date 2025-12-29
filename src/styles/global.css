@@ -1193,6 +1193,11 @@ label {
   padding: 24px;
 }
 
+.modal-card.modal-dark {
+  background: rgba(10, 14, 20, 0.95);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
 .modal-header {
   display: flex;
   align-items: center;
