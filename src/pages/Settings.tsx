@@ -10,6 +10,13 @@ import {
   updateAccount,
   upsertSettings
 } from "../lib/api";
+import {
+  buildStorageAvatarRef,
+  getAvatarPathFromRef,
+  isStorageAvatarRef,
+  resolveAvatarRefUrl,
+  uploadAvatarFile
+} from "../lib/avatar";
 import { supabase } from "../lib/supabaseClient";
 import type {
   Account,
@@ -67,9 +74,15 @@ const defaultDicebearSeeds = [
   "Maya",
   "Sole"
 ];
+const maxAvatarEntries = 12;
 
-const avatarFavoritesKey = "profile_avatar_favorites_v1";
-const avatarRecentKey = "profile_avatar_recent_v1";
+type ProfilePayload = {
+  display_name?: string | null;
+  avatar_url?: string | null;
+  avatar_path?: string | null;
+  favorite_avatars?: string[];
+  recent_avatars?: string[];
+};
 
 const Settings = () => {
   const { session } = useAuth();
@@ -93,6 +106,10 @@ const Settings = () => {
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
   const [favoriteAvatars, setFavoriteAvatars] = useState<string[]>([]);
   const [recentAvatars, setRecentAvatars] = useState<string[]>([]);
+  const [avatarRef, setAvatarRef] = useState("");
+  const [avatarPath, setAvatarPath] = useState<string | null>(null);
+  const [avatarUrlMap, setAvatarUrlMap] = useState<Record<string, string>>({});
+  const [profileLoaded, setProfileLoaded] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
@@ -135,28 +152,116 @@ const Settings = () => {
   }, [settings]);
 
   useEffect(() => {
-    const loadList = (key: string) => {
-      if (typeof localStorage === "undefined") return [];
-      const raw = localStorage.getItem(key);
-      if (!raw) return [];
+    setProfileLoaded(false);
+    setFavoriteAvatars([]);
+    setRecentAvatars([]);
+    setAvatarRef("");
+    setAvatarPath(null);
+    setAvatarUrlMap({});
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user || profileLoaded) return;
+    let isActive = true;
+
+    const loadProfile = async () => {
       try {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("display_name, avatar_url, avatar_path, favorite_avatars, recent_avatars")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data || !isActive) return;
+
+        if (typeof data.display_name === "string") {
+          setDisplayName(data.display_name);
+        }
+
+        const profileAvatarRef = data.avatar_path
+          ? buildStorageAvatarRef(data.avatar_path)
+          : typeof data.avatar_url === "string"
+            ? data.avatar_url
+            : "";
+
+        if (profileAvatarRef) {
+          setAvatarRef(profileAvatarRef);
+          setAvatarPath(data.avatar_path ?? null);
+          const resolvedUrl = await resolveAvatarRefUrl(profileAvatarRef);
+          if (resolvedUrl && isActive) {
+            setAvatarUrl(resolvedUrl);
+            setAvatarUrlMap((prev) => ({ ...prev, [profileAvatarRef]: resolvedUrl }));
+          }
+        }
+
+        const favorites = Array.isArray(data.favorite_avatars)
+          ? data.favorite_avatars.filter((item) => typeof item === "string")
+          : [];
+        const recents = Array.isArray(data.recent_avatars)
+          ? data.recent_avatars.filter((item) => typeof item === "string")
+          : [];
+
+        setFavoriteAvatars(favorites);
+        setRecentAvatars(recents);
       } catch {
-        return [];
+        // Profile is optional; keep defaults when missing.
+      } finally {
+        if (isActive) setProfileLoaded(true);
       }
     };
-    setFavoriteAvatars(loadList(avatarFavoritesKey));
-    setRecentAvatars(loadList(avatarRecentKey));
-  }, []);
+
+    loadProfile();
+
+    return () => {
+      isActive = false;
+    };
+  }, [profileLoaded, session]);
 
   useEffect(() => {
     if (!session?.user) return;
     const metadata = session.user.user_metadata ?? {};
-    setDisplayName(typeof metadata.display_name === "string" ? metadata.display_name : "");
-    setAvatarUrl(typeof metadata.avatar_url === "string" ? metadata.avatar_url : "");
+    if (!profileLoaded) {
+      const metadataName =
+        typeof metadata.display_name === "string" ? metadata.display_name : "";
+      const metadataAvatarUrl =
+        typeof metadata.avatar_url === "string" ? metadata.avatar_url : "";
+      setDisplayName(metadataName);
+      setAvatarUrl(metadataAvatarUrl);
+      setAvatarRef(metadataAvatarUrl);
+    }
     setEmailDraft(session.user.email ?? "");
-  }, [session]);
+  }, [profileLoaded, session]);
+
+  useEffect(() => {
+    const refs = Array.from(
+      new Set([avatarRef, ...favoriteAvatars, ...recentAvatars])
+    ).filter((ref) => typeof ref === "string" && ref.length > 0);
+    const pendingRefs = refs.filter(
+      (ref) => isStorageAvatarRef(ref) && !avatarUrlMap[ref]
+    );
+    if (pendingRefs.length === 0) return;
+    let isActive = true;
+
+    const resolveRefs = async () => {
+      const entries = await Promise.all(
+        pendingRefs.map(async (ref) => [ref, await resolveAvatarRefUrl(ref)] as const)
+      );
+      if (!isActive) return;
+      setAvatarUrlMap((prev) => {
+        const next = { ...prev };
+        entries.forEach(([ref, url]) => {
+          if (url) next[ref] = url;
+        });
+        return next;
+      });
+    };
+
+    resolveRefs();
+
+    return () => {
+      isActive = false;
+    };
+  }, [avatarRef, avatarUrlMap, favoriteAvatars, recentAvatars]);
 
   useEffect(() => {
     if (editingAccount) return;
@@ -187,17 +292,61 @@ const Settings = () => {
   const handleProfileSave = async (event: FormEvent) => {
     event.preventDefault();
     setProfileMessage(null);
-    if (!session) return;
+    if (!session?.user) return;
     try {
-      const payload = {
-        display_name: displayName.trim() || null,
-        avatar_url: avatarUrl.trim() || null
+      const trimmedDisplayName = displayName.trim();
+      const trimmedAvatarRef = avatarRef.trim();
+      const avatarFields = {
+        avatar_url: null as string | null,
+        avatar_path: null as string | null
       };
-      const { error } = await supabase.auth.updateUser({ data: payload });
-      if (error) throw error;
-      if (avatarUrl.trim()) {
-        pushRecentAvatar(avatarUrl.trim());
+
+      if (trimmedAvatarRef) {
+        if (isStorageAvatarRef(trimmedAvatarRef)) {
+          avatarFields.avatar_path = getAvatarPathFromRef(trimmedAvatarRef);
+        } else {
+          avatarFields.avatar_url = trimmedAvatarRef;
+        }
       }
+
+      let metadataAvatarUrl = avatarUrl.trim();
+      if (!metadataAvatarUrl && trimmedAvatarRef && isStorageAvatarRef(trimmedAvatarRef)) {
+        const resolved = await resolveAndCacheAvatarUrl(trimmedAvatarRef);
+        if (resolved) {
+          metadataAvatarUrl = resolved;
+          setAvatarUrl(resolved);
+        }
+      }
+
+      const nextRecents = trimmedAvatarRef
+        ? [trimmedAvatarRef, ...recentAvatars.filter((item) => item !== trimmedAvatarRef)].slice(
+            0,
+            maxAvatarEntries
+          )
+        : recentAvatars;
+
+      if (trimmedAvatarRef) {
+        setRecentAvatars(nextRecents);
+      }
+
+      const { error } = await supabase.auth.updateUser({
+        data: {
+          display_name: trimmedDisplayName || null,
+          avatar_url: metadataAvatarUrl || null
+        }
+      });
+      if (error) throw error;
+
+      await persistProfile(
+        {
+          display_name: trimmedDisplayName || null,
+          ...avatarFields,
+          favorite_avatars: favoriteAvatars,
+          recent_avatars: nextRecents
+        },
+        false
+      );
+
       setProfileMessage("Profilo aggiornato.");
     } catch (err) {
       setProfileMessage((err as Error).message);
@@ -245,18 +394,21 @@ const Settings = () => {
     }
   };
 
-  const handleAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      if (result) {
-        setAvatarUrl(result);
-        pushRecentAvatar(result);
+    if (!file || !session?.user) return;
+    try {
+      const upload = await uploadAvatarFile(session.user.id, file);
+      if (upload.url) {
+        setAvatarUrl(upload.url);
+        setAvatarUrlMap((prev) => ({ ...prev, [upload.ref]: upload.url }));
       }
-    };
-    reader.readAsDataURL(file);
+      setAvatarRef(upload.ref);
+      setAvatarPath(upload.path);
+      pushRecentAvatar(upload.ref);
+    } catch (err) {
+      setProfileMessage((err as Error).message);
+    }
   };
 
   const buildDicebearUrl = (style: string, seed: string) =>
@@ -266,7 +418,7 @@ const Settings = () => {
     const emailSeed = emailDraft.split("@")[0] ?? "";
     const preferredSeed = displayName.trim() || emailSeed.trim();
     const seeds = preferredSeed ? [preferredSeed, ...defaultDicebearSeeds] : defaultDicebearSeeds;
-    return Array.from(new Set(seeds.filter((seed) => seed))).slice(0, 12);
+    return Array.from(new Set(seeds.filter((seed) => seed))).slice(0, maxAvatarEntries);
   }, [displayName, emailDraft]);
 
   const getAvatarLabel = (url: string, fallback: string) => {
@@ -281,33 +433,79 @@ const Settings = () => {
     return fallback;
   };
 
-  const pushRecentAvatar = (url: string) => {
-    if (!url) return;
-    setRecentAvatars((prev) => {
-      const next = [url, ...prev.filter((item) => item !== url)].slice(0, 12);
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(avatarRecentKey, JSON.stringify(next));
+  const getAvatarDisplayUrl = (ref: string) => {
+    if (!ref) return "";
+    if (!isStorageAvatarRef(ref)) return ref;
+    if (ref === avatarRef && avatarUrl) return avatarUrl;
+    return avatarUrlMap[ref] ?? "";
+  };
+
+  const resolveAndCacheAvatarUrl = async (ref: string) => {
+    if (avatarUrlMap[ref]) return avatarUrlMap[ref];
+    const resolved = await resolveAvatarRefUrl(ref);
+    if (resolved) {
+      setAvatarUrlMap((prev) => (prev[ref] === resolved ? prev : { ...prev, [ref]: resolved }));
+    }
+    return resolved;
+  };
+
+  const selectAvatarRef = async (ref: string) => {
+    if (!ref) return;
+    setAvatarRef(ref);
+    if (isStorageAvatarRef(ref)) {
+      const path = getAvatarPathFromRef(ref);
+      setAvatarPath(path);
+      const resolved = await resolveAndCacheAvatarUrl(ref);
+      if (resolved) setAvatarUrl(resolved);
+    } else {
+      setAvatarPath(null);
+      setAvatarUrl(ref);
+    }
+  };
+
+  const persistProfile = async (payload: ProfilePayload, silent = true) => {
+    if (!session?.user) return;
+    try {
+      const { error } = await supabase.from("profiles").upsert(
+        {
+          user_id: session.user.id,
+          ...payload
+        },
+        { onConflict: "user_id" }
+      );
+      if (error) throw error;
+    } catch (err) {
+      if (!silent) {
+        throw err;
       }
+    }
+  };
+
+  const pushRecentAvatar = (ref: string) => {
+    if (!ref) return;
+    setRecentAvatars((prev) => {
+      const next = [ref, ...prev.filter((item) => item !== ref)].slice(0, maxAvatarEntries);
+      void persistProfile({ recent_avatars: next });
       return next;
     });
   };
 
-  const toggleFavoriteAvatar = (url: string) => {
-    if (!url) return;
+  const toggleFavoriteAvatar = (ref: string) => {
+    if (!ref) return;
     setFavoriteAvatars((prev) => {
-      const exists = prev.includes(url);
+      const exists = prev.includes(ref);
       const next = exists
-        ? prev.filter((item) => item !== url)
-        : [url, ...prev].slice(0, 12);
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(avatarFavoritesKey, JSON.stringify(next));
-      }
+        ? prev.filter((item) => item !== ref)
+        : [ref, ...prev].slice(0, maxAvatarEntries);
+      void persistProfile({ favorite_avatars: next });
       return next;
     });
   };
 
   const handleAvatarPick = (seed: string) => {
     const url = buildDicebearUrl(avatarStyle, seed);
+    setAvatarRef(url);
+    setAvatarPath(null);
     setAvatarUrl(url);
     pushRecentAvatar(url);
   };
@@ -316,6 +514,8 @@ const Settings = () => {
     const seed = customSeed.trim();
     if (!seed) return;
     const url = buildDicebearUrl(avatarStyle, seed);
+    setAvatarRef(url);
+    setAvatarPath(null);
     setAvatarUrl(url);
     pushRecentAvatar(url);
   };
@@ -323,6 +523,8 @@ const Settings = () => {
   const handleRandomSeed = () => {
     const seed = `user-${Math.random().toString(36).slice(2, 7)}`;
     const url = buildDicebearUrl(avatarStyle, seed);
+    setAvatarRef(url);
+    setAvatarPath(null);
     setAvatarUrl(url);
     pushRecentAvatar(url);
   };
@@ -686,7 +888,12 @@ const Settings = () => {
               className="input"
               placeholder="Avatar URL"
               value={avatarUrl}
-              onChange={(event) => setAvatarUrl(event.target.value)}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setAvatarUrl(nextValue);
+                setAvatarRef(nextValue);
+                setAvatarPath(null);
+              }}
             />
             <button className="button" type="submit">
               Salva profilo
@@ -695,14 +902,8 @@ const Settings = () => {
         </form>
         {profileMessage && <div className="notice">{profileMessage}</div>}
         <div className="profile-avatar-toggle">
-          <div>
-            <strong>Avatar</strong>
-            <span className="section-subtitle">
-              Mostra la sezione DiceBear, preferiti e ultimi aggiunti.
-            </span>
-          </div>
           <button
-            className="button ghost small"
+            className="avatar-toggle-button"
             type="button"
             onClick={() => setAvatarPanelOpen((prev) => !prev)}
             aria-expanded={avatarPanelOpen}
@@ -716,9 +917,7 @@ const Settings = () => {
             <div className="profile-picker-header">
               <div>
                 <strong>Avatar DiceBear</strong>
-                <span className="section-subtitle">
-                  Scegli uno stile e un seed.
-                </span>
+                <p className="section-subtitle">Scegli uno stile e un seed.</p>
               </div>
               <select
                 className="select"
@@ -755,28 +954,29 @@ const Settings = () => {
                   {favoriteAvatars.length === 0 ? (
                     <span className="section-subtitle">Nessuno</span>
                   ) : (
-                    favoriteAvatars.slice(0, 4).map((url, index) => (
+                  favoriteAvatars.slice(0, 4).map((ref, index) => {
+                    const displayUrl = getAvatarDisplayUrl(ref);
+                    const isActive = avatarRef === ref;
+                    return (
                       <div
-                        className={`avatar-option compact${
-                          avatarUrl === url ? " active" : ""
-                        }`}
-                        key={`fav-mini-${url}-${index}`}
+                        className={`avatar-option compact${isActive ? " active" : ""}`}
+                        key={`fav-mini-${ref}-${index}`}
                       >
                         <button
                           className="avatar-select"
                           type="button"
                           onClick={() => {
-                            setAvatarUrl(url);
-                            pushRecentAvatar(url);
+                            void selectAvatarRef(ref);
+                            pushRecentAvatar(ref);
                           }}
                         >
-                          <img src={url} alt="Avatar preferito" loading="lazy" />
+                          <img src={displayUrl} alt="Avatar preferito" loading="lazy" />
                           <span>Pref</span>
                         </button>
                         <button
                           className="avatar-fav active"
                           type="button"
-                          onClick={() => toggleFavoriteAvatar(url)}
+                          onClick={() => toggleFavoriteAvatar(ref)}
                           aria-label="Rimuovi dai preferiti"
                         >
                           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -786,19 +986,20 @@ const Settings = () => {
                           </svg>
                         </button>
                       </div>
-                    ))
-                  )}
+                    );
+                  })
+                )}
                 </div>
               </div>
             </div>
             <div className="avatar-grid">
-              {dicebearSeeds.map((seed) => {
-                const url = buildDicebearUrl(avatarStyle, seed);
-                const isActive = avatarUrl === url;
-                const isFavorite = favoriteAvatars.includes(url);
-                return (
-                  <div
-                    className={`avatar-option${isActive ? " active" : ""}`}
+            {dicebearSeeds.map((seed) => {
+              const url = buildDicebearUrl(avatarStyle, seed);
+              const isActive = avatarRef === url;
+              const isFavorite = favoriteAvatars.includes(url);
+              return (
+                <div
+                  className={`avatar-option${isActive ? " active" : ""}`}
                     key={`seed-${seed}`}
                   >
                     <button
@@ -832,7 +1033,7 @@ const Settings = () => {
                 <div className="avatar-section-header">
                   <div>
                     <strong>Preferiti</strong>
-                    <span className="section-subtitle">I tuoi avatar salvati.</span>
+                    <p className="section-subtitle">I tuoi avatar salvati.</p>
                   </div>
                   <button
                     className="button ghost small"
@@ -844,41 +1045,42 @@ const Settings = () => {
                 </div>
                 {favoritesOpen && (
                   <div className="avatar-grid compact">
-                    {favoriteAvatars.map((url, index) => {
-                      const isActive = avatarUrl === url;
-                      return (
-                        <div
-                          className={`avatar-option compact${isActive ? " active" : ""}`}
-                          key={`favorite-${url}-${index}`}
+                  {favoriteAvatars.map((ref, index) => {
+                    const displayUrl = getAvatarDisplayUrl(ref);
+                    const isActive = avatarRef === ref;
+                    return (
+                      <div
+                        className={`avatar-option compact${isActive ? " active" : ""}`}
+                        key={`favorite-${ref}-${index}`}
+                      >
+                        <button
+                          className="avatar-select"
+                          type="button"
+                          onClick={() => {
+                            void selectAvatarRef(ref);
+                            pushRecentAvatar(ref);
+                          }}
                         >
-                          <button
-                            className="avatar-select"
-                            type="button"
-                            onClick={() => {
-                              setAvatarUrl(url);
-                              pushRecentAvatar(url);
-                            }}
-                          >
-                            <img src={url} alt="Avatar preferito" loading="lazy" />
-                            <span>{getAvatarLabel(url, "Preferito")}</span>
-                          </button>
-                          <button
-                            className="avatar-fav active"
-                            type="button"
-                            onClick={() => toggleFavoriteAvatar(url)}
-                            aria-label="Rimuovi dai preferiti"
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path
-                                d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
-                              />
-                            </svg>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                          <img src={displayUrl} alt="Avatar preferito" loading="lazy" />
+                          <span>{getAvatarLabel(displayUrl, "Preferito")}</span>
+                        </button>
+                        <button
+                          className="avatar-fav active"
+                          type="button"
+                          onClick={() => toggleFavoriteAvatar(ref)}
+                          aria-label="Rimuovi dai preferiti"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               </div>
             )}
             {recentAvatars.length > 0 && (
@@ -886,7 +1088,7 @@ const Settings = () => {
                 <div className="avatar-section-header">
                   <div>
                     <strong>Ultimi aggiunti</strong>
-                    <span className="section-subtitle">Selezioni recenti.</span>
+                    <p className="section-subtitle">Selezioni recenti.</p>
                   </div>
                   <button
                     className="button ghost small"
@@ -898,46 +1100,47 @@ const Settings = () => {
                 </div>
                 {recentsOpen && (
                   <div className="avatar-grid compact">
-                    {recentAvatars.map((url, index) => {
-                      const isActive = avatarUrl === url;
-                      const isFavorite = favoriteAvatars.includes(url);
-                      return (
-                        <div
-                          className={`avatar-option compact${isActive ? " active" : ""}`}
-                          key={`recent-${url}-${index}`}
+                  {recentAvatars.map((ref, index) => {
+                    const displayUrl = getAvatarDisplayUrl(ref);
+                    const isActive = avatarRef === ref;
+                    const isFavorite = favoriteAvatars.includes(ref);
+                    return (
+                      <div
+                        className={`avatar-option compact${isActive ? " active" : ""}`}
+                        key={`recent-${ref}-${index}`}
+                      >
+                        <button
+                          className="avatar-select"
+                          type="button"
+                          onClick={() => void selectAvatarRef(ref)}
                         >
-                          <button
-                            className="avatar-select"
-                            type="button"
-                            onClick={() => setAvatarUrl(url)}
-                          >
-                            <img src={url} alt="Avatar recente" loading="lazy" />
-                            <span>{getAvatarLabel(url, "Recente")}</span>
-                          </button>
-                          <button
-                            className={`avatar-fav${isFavorite ? " active" : ""}`}
-                            type="button"
-                            onClick={() => toggleFavoriteAvatar(url)}
-                            aria-label={
-                              isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
-                            }
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path
-                                d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
-                              />
-                            </svg>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                          <img src={displayUrl} alt="Avatar recente" loading="lazy" />
+                          <span>{getAvatarLabel(displayUrl, "Recente")}</span>
+                        </button>
+                        <button
+                          className={`avatar-fav${isFavorite ? " active" : ""}`}
+                          type="button"
+                          onClick={() => toggleFavoriteAvatar(ref)}
+                          aria-label={
+                            isFavorite ? "Rimuovi dai preferiti" : "Salva nei preferiti"
+                          }
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M12 21s-6.7-4.3-9.3-7.4C.4 10.9 1.4 6.9 4.9 5.7c2-.7 4 .1 5.1 1.7 1.1-1.6 3.1-2.4 5.1-1.7 3.5 1.2 4.5 5.2 2.2 7.9C18.7 16.7 12 21 12 21z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               </div>
             )}
-            <span className="section-subtitle">
+            <p className="section-subtitle">
               Puoi anche incollare un URL o caricare una foto.
-            </span>
+            </p>
           </div>
         )}
         <div className="profile-actions">

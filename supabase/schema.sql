@@ -335,3 +335,44 @@ end;
 $$;
 
 grant execute on function public.seed_default_categories() to authenticated;
+
+-- Profiles
+create table if not exists public.profiles (
+  user_id uuid primary key references auth.users on delete cascade default auth.uid(),
+  display_name text,
+  avatar_url text,
+  avatar_path text,
+  favorite_avatars text[] not null default '{}',
+  recent_avatars text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists profiles_updated_at on public.profiles;
+create trigger profiles_updated_at
+before update on public.profiles
+for each row
+execute procedure public.set_updated_at();
+
+alter table public.profiles enable row level security;
+
+create policy "Profiles select" on public.profiles
+  for select using (auth.uid() = user_id);
+create policy "Profiles insert" on public.profiles
+  for insert with check (auth.uid() = user_id);
+create policy "Profiles update" on public.profiles
+  for update using (auth.uid() = user_id);
+create policy "Profiles delete" on public.profiles
+  for delete using (auth.uid() = user_id);
+
+-- Avatar storage
+insert into storage.buckets (id, name, public)
+values ('Avatar_profile', 'Avatar_profile', false)
+on conflict (id) do nothing;
+
+create policy "Avatar_profile select" on storage.objects
+  for select using (bucket_id = 'Avatar_profile' and auth.uid() = owner);
+create policy "Avatar_profile insert" on storage.objects
+  for insert with check (bucket_id = 'Avatar_profile' and auth.uid() = owner);
+create policy "Avatar_profile delete" on storage.objects
+  for delete using (bucket_id = 'Avatar_profile' and auth.uid() = owner);

@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import logo from "../logo.png";
 import { useAuth } from "../contexts/AuthContext";
+import { buildStorageAvatarRef, resolveAvatarRefUrl } from "../lib/avatar";
+import { supabase } from "../lib/supabaseClient";
 
 const navItems = [
   { to: "/", label: "Dashboard" },
@@ -30,11 +33,62 @@ const maskEmail = (email?: string) => {
 export const Layout = () => {
   const { session, signOut } = useAuth();
   const metadata = session?.user.user_metadata ?? {};
-  const avatarUrl = typeof metadata.avatar_url === "string" ? metadata.avatar_url : "";
-  const displayName =
+  const fallbackAvatarUrl =
+    typeof metadata.avatar_url === "string" ? metadata.avatar_url : "";
+  const fallbackDisplayName =
     typeof metadata.display_name === "string" && metadata.display_name.trim()
       ? metadata.display_name
       : maskEmail(session?.user.email);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState(fallbackAvatarUrl);
+  const [profileDisplayName, setProfileDisplayName] = useState(fallbackDisplayName);
+
+  useEffect(() => {
+    setProfileAvatarUrl(fallbackAvatarUrl);
+    setProfileDisplayName(fallbackDisplayName);
+
+    if (!session?.user) return;
+    let isActive = true;
+
+    const loadProfile = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("display_name, avatar_url, avatar_path")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (error || !data || !isActive) return;
+
+        const nextDisplayName =
+          typeof data.display_name === "string" && data.display_name.trim()
+            ? data.display_name
+            : fallbackDisplayName;
+        const avatarRef = data.avatar_path
+          ? buildStorageAvatarRef(data.avatar_path)
+          : typeof data.avatar_url === "string"
+            ? data.avatar_url
+            : "";
+
+        setProfileDisplayName(nextDisplayName);
+
+        if (avatarRef) {
+          const resolvedUrl = await resolveAvatarRefUrl(avatarRef);
+          if (resolvedUrl && isActive) {
+            setProfileAvatarUrl(resolvedUrl);
+          }
+        } else {
+          setProfileAvatarUrl("");
+        }
+      } catch {
+        // keep fallback
+      }
+    };
+
+    loadProfile();
+
+    return () => {
+      isActive = false;
+    };
+  }, [fallbackAvatarUrl, fallbackDisplayName, session]);
 
   return (
     <div className="app-shell">
@@ -82,11 +136,11 @@ export const Layout = () => {
       <div className="content">
         <header className="topbar">
           <div className="topbar-user">
-            {avatarUrl ? (
-              <img className="user-avatar" src={avatarUrl} alt="Avatar utente" />
+            {profileAvatarUrl ? (
+              <img className="user-avatar" src={profileAvatarUrl} alt="Avatar utente" />
             ) : null}
             <div>
-              <strong>{displayName}</strong>
+              <strong>{profileDisplayName}</strong>
               <div className="pill">EUR / USD</div>
             </div>
           </div>
