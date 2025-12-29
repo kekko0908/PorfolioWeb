@@ -26,6 +26,7 @@ const colorMap: Record<string, string> = {
   Oro: "#facc15",
   "Real Estate": "#a78bfa",
   "Private Equity": "#f97316",
+  "Asset Investimento": "#38bdf8",
   Cash: "#22c55e",
   Altro: "#94a3b8"
 };

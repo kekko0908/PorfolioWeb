@@ -43,7 +43,6 @@ const Settings = () => {
   const { accounts, categories, transactions, holdings, settings, refresh, loading, error } =
     usePortfolioData();
   const [baseCurrency, setBaseCurrency] = useState("EUR");
-  const [emergencyFund, setEmergencyFund] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [accountForm, setAccountForm] = useState(emptyAccountForm);
@@ -81,7 +80,6 @@ const Settings = () => {
   useEffect(() => {
     if (settings) {
       setBaseCurrency(settings.base_currency);
-      setEmergencyFund(String(settings.emergency_fund));
     }
   }, [settings]);
 
@@ -102,7 +100,7 @@ const Settings = () => {
       await upsertSettings({
         user_id: session.user.id,
         base_currency: baseCurrency as "EUR" | "USD",
-        emergency_fund: Number(emergencyFund)
+        emergency_fund: settings?.emergency_fund ?? 0
       });
       await refresh();
       setMessage("Impostazioni aggiornate.");
@@ -439,14 +437,6 @@ const Settings = () => {
             <option value="EUR">EUR</option>
             <option value="USD">USD</option>
           </select>
-          <input
-            className="input"
-            type="number"
-            step="0.01"
-            placeholder="Fondo emergenza"
-            value={emergencyFund}
-            onChange={(event) => setEmergencyFund(event.target.value)}
-          />
           <button className="button" type="submit">
             Salva impostazioni
           </button>
@@ -540,7 +530,7 @@ const Settings = () => {
                   <span className="account-emoji">
                     {account.emoji && account.emoji.trim() ? account.emoji : "O"}
                   </span>
-                  <div>
+                  <div className="account-info">
                     <strong>{account.name}</strong>
                     <span className="section-subtitle">
                       {accountTypeLabels[account.type] ?? account.type}

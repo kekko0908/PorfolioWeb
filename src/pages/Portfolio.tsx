@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePortfolioData } from "../hooks/usePortfolioData";
-import { createHolding, deleteHolding, updateHolding, upsertSettings } from "../lib/api";
+import {
+  createHolding,
+  deleteHolding,
+  fetchAllocationTargets,
+  replaceAllocationTargets,
+  updateHolding,
+  upsertSettings
+} from "../lib/api";
 import { DonutChart } from "../components/charts/DonutChart";
 import {
   formatCurrency,
@@ -10,8 +17,21 @@ import {
   formatPercentSafe
 } from "../lib/format";
 import { fetchAssetOverview, fetchGlobalQuote } from "../lib/market";
-import { buildAccountBalances } from "../lib/metrics";
+import { buildAccountBalances, resolveEmergencyFundBalance } from "../lib/metrics";
 import type { Holding } from "../types";
+
+type AllocationTargetItem = {
+  key: string;
+  label: string;
+  pct: number;
+  kind: "reserve" | "asset";
+};
+
+type AllocationCap = {
+  enabled: boolean;
+  value: string;
+  pct: string;
+};
 
 const assetClasses = [
   "Azioni",
@@ -24,6 +44,8 @@ const assetClasses = [
   "Private Equity",
   "Altro"
 ];
+
+const investmentOnlyLabels = new Set(["ETF", "Obbligazioni", "Crypto"]);
 
 const emptyForm = {
   name: "",
@@ -63,46 +85,298 @@ const Portfolio = () => {
   const [allocationMessage, setAllocationMessage] = useState<string | null>(null);
   const [targetMessage, setTargetMessage] = useState<string | null>(null);
   const [targetDrafts, setTargetDrafts] = useState<Record<string, number>>({});
-  const [cashCapInput, setCashCapInput] = useState("");
-  const [useCashCap, setUseCashCap] = useState(false);
-  const [rebalanceMonths, setRebalanceMonths] = useState(6);
-  const [allocationTargets, setAllocationTargets] = useState({
-    cash: 20,
-    etf: 50,
-    bonds: 20,
-    emergency: 10
+  const [allocationView, setAllocationView] = useState<"general" | "investment">(
+    "general"
+  );
+  const [investmentTargets, setInvestmentTargets] = useState({
+    etf: 80,
+    bonds: 20
   });
+  const [allocationCaps, setAllocationCaps] = useState<Record<string, AllocationCap>>({
+    cash: { enabled: false, value: "", pct: "" }
+  });
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedRef = useRef<string | null>(null);
+  const autoSaveReadyRef = useRef(false);
+  const [capsModalOpen, setCapsModalOpen] = useState(false);
+  const [allocationTargetsLoaded, setAllocationTargetsLoaded] = useState(false);
+  const [allocationTargetItems, setAllocationTargetItems] = useState<
+    AllocationTargetItem[]
+  >([
+    { key: "cash", label: "Cash", pct: 20, kind: "reserve" },
+    { key: "investments", label: "Asset Investimento", pct: 70, kind: "asset" },
+    { key: "emergency", label: "Fondo emergenza", pct: 10, kind: "reserve" }
+  ]);
+  const [addTargetOpen, setAddTargetOpen] = useState(false);
+  const [newTargetKey, setNewTargetKey] = useState("");
   const [allocationColors, setAllocationColors] = useState({
     Cash: "#22c55e",
     ETF: "#ef4444",
     Obbligazioni: "#f59e0b",
-    "Fondo emergenza": "#60a5fa"
+    "Fondo emergenza": "#60a5fa",
+    "Asset Investimento": "#38bdf8",
+    Crypto: "#14b8a6"
   });
 
   const currency = settings?.base_currency ?? "EUR";
   const isCash = form.asset_class === "Liquidita";
   const cashCapValue = useMemo(() => {
-    if (!useCashCap || !cashCapInput.trim()) return null;
-    const parsed = Number(cashCapInput);
+    const cashCap = allocationCaps.cash;
+    if (!cashCap?.enabled || !cashCap.value.trim()) return null;
+    const parsed = Number(cashCap.value);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-  }, [cashCapInput, useCashCap]);
+  }, [allocationCaps]);
 
   useEffect(() => {
     if (!settings) return;
-    setAllocationTargets({
-      cash: settings.target_cash_pct ?? 20,
-      etf: settings.target_etf_pct ?? 50,
-      bonds: settings.target_bond_pct ?? 20,
-      emergency: settings.target_emergency_pct ?? 10
+    if (!allocationTargetsLoaded) {
+      setAllocationTargetItems((prev) => {
+        const next = [...prev];
+        const upsert = (item: AllocationTargetItem) => {
+          const index = next.findIndex((existing) => existing.key === item.key);
+          if (index === -1) next.push(item);
+          else next[index] = { ...next[index], ...item };
+        };
+
+        upsert({
+          key: "cash",
+          label: "Cash",
+          pct: settings.target_cash_pct ?? 20,
+          kind: "reserve"
+        });
+        upsert({
+          key: "emergency",
+          label: "Fondo emergenza",
+          pct: settings.target_emergency_pct ?? 10,
+          kind: "reserve"
+        });
+        if (!next.some((item) => item.key === "investments")) {
+          next.push({
+            key: "investments",
+            label: "Asset Investimento",
+            pct: 70,
+            kind: "asset"
+          });
+        }
+        return next;
+      });
+    }
+    setAllocationCaps((prev) => ({
+      ...prev,
+      cash: {
+        enabled: settings.cash_target_cap !== null && settings.cash_target_cap !== undefined,
+        value:
+          settings.cash_target_cap !== null && settings.cash_target_cap !== undefined
+            ? String(settings.cash_target_cap)
+            : "",
+        pct: prev.cash?.pct ?? ""
+      }
+    }));
+
+    const clampPct = (value: number) => Math.max(0, Math.min(100, value));
+    const etfRaw = settings.target_etf_pct ?? 80;
+    const bondRaw = settings.target_bond_pct ?? 20;
+    const etfClamped = clampPct(etfRaw);
+    const bondClamped = clampPct(bondRaw);
+    const total = etfClamped + bondClamped;
+    const normalizedEtf = total > 0 ? (etfClamped / total) * 100 : 80;
+    const normalizedBonds = 100 - normalizedEtf;
+    setInvestmentTargets({
+      etf: Number(normalizedEtf.toFixed(1)),
+      bonds: Number(normalizedBonds.toFixed(1))
     });
-    setRebalanceMonths(settings.rebalance_months ?? 6);
-    setCashCapInput(
-      settings.cash_target_cap !== null && settings.cash_target_cap !== undefined
-        ? String(settings.cash_target_cap)
-        : ""
-    );
-    setUseCashCap(settings.cash_target_cap !== null && settings.cash_target_cap !== undefined);
   }, [settings]);
+
+  useEffect(() => {
+    if (!session || allocationTargetsLoaded) return;
+    let cancelled = false;
+    const localKey = "portfolio_allocation_targets_v1";
+
+    const hydrateFromStorage = (
+      stored: unknown
+    ):
+      | {
+          items: AllocationTargetItem[];
+          colors?: Record<string, string>;
+          caps?: Record<string, AllocationCap>;
+        }
+      | null => {
+      if (!stored || typeof stored !== "string") return null;
+      try {
+        const parsed = JSON.parse(stored) as {
+          items?: AllocationTargetItem[];
+          colors?: Record<string, string>;
+          caps?: Record<string, AllocationCap>;
+        };
+        if (!Array.isArray(parsed.items)) return null;
+        return { items: parsed.items, colors: parsed.colors, caps: parsed.caps };
+      } catch {
+        return null;
+      }
+    };
+
+    const normalizeCaps = (caps?: Record<string, AllocationCap>) => {
+      if (!caps) return undefined;
+      const next: Record<string, AllocationCap> = {};
+      Object.entries(caps).forEach(([key, cap]) => {
+        next[key] = {
+          enabled: Boolean(cap?.enabled),
+          value: typeof cap?.value === "string" ? cap.value : "",
+          pct: typeof cap?.pct === "string" ? cap.pct : ""
+        };
+      });
+      return next;
+    };
+
+    const normalizeTargets = (items: AllocationTargetItem[]) => {
+      const legacyInvestmentPct = items.reduce((sum, item) => {
+        if (item.key === "ETF" || item.key === "Obbligazioni") {
+          return sum + (Number.isFinite(item.pct) ? item.pct : 0);
+        }
+        return sum;
+      }, 0);
+
+      const rawInvestment = items.find(
+        (item) => item.key === "investments" || item.label === "Asset Investimento"
+      );
+      const investmentItem: AllocationTargetItem = rawInvestment
+        ? {
+            ...rawInvestment,
+            key: "investments",
+            label: "Asset Investimento",
+            kind: "asset"
+          }
+        : {
+            key: "investments",
+            label: "Asset Investimento",
+            pct: legacyInvestmentPct > 0 ? legacyInvestmentPct : 70,
+            kind: "asset"
+          };
+
+      const normalized = items
+        .filter(
+          (item) =>
+            item.key !== "ETF" &&
+            item.key !== "Obbligazioni" &&
+            item.key !== "investments" &&
+            item.label !== "Asset Investimento"
+        )
+        .map((item) => ({
+          ...item,
+          kind: item.key === "cash" || item.key === "emergency" ? "reserve" : "asset"
+        }));
+
+      const cashItem =
+        normalized.find((item) => item.key === "cash") ??
+        ({
+          key: "cash",
+          label: "Cash",
+          pct: 20,
+          kind: "reserve"
+        } as AllocationTargetItem);
+
+      const emergencyItem =
+        normalized.find((item) => item.key === "emergency") ??
+        ({
+          key: "emergency",
+          label: "Fondo emergenza",
+          pct: 10,
+          kind: "reserve"
+        } as AllocationTargetItem);
+
+      const filtered = normalized.filter(
+        (item) => item.key !== "cash" && item.key !== "emergency"
+      );
+
+      return [
+        cashItem,
+        investmentItem,
+        emergencyItem,
+        ...filtered.filter((item) => item.key !== investmentItem.key)
+      ];
+    };
+
+    (async () => {
+      const storedTargets = await fetchAllocationTargets();
+      if (cancelled) return;
+
+      const local = hydrateFromStorage(localStorage.getItem(localKey));
+      const localCaps = normalizeCaps(local?.caps);
+
+      if (storedTargets.length > 0) {
+        const normalizedTargets = normalizeTargets(
+          storedTargets.map((item) => ({
+            key: item.key,
+            label: item.label,
+            pct: item.pct,
+            kind: item.key === "cash" || item.key === "emergency" ? "reserve" : "asset"
+          }))
+        );
+        setAllocationTargetItems(normalizedTargets);
+        setAllocationColors((prev) => {
+          const next = { ...prev };
+          storedTargets.forEach((item) => {
+            if (item.color) {
+              next[item.label] = item.color;
+            }
+          });
+          if (local?.colors) {
+            const dbKeys = new Set(storedTargets.map((item) => item.label));
+            Object.entries(local.colors).forEach(([key, value]) => {
+              if (!dbKeys.has(key) && value) {
+                next[key] = value;
+              }
+            });
+          }
+          return next;
+        });
+        if (localCaps) setAllocationCaps(localCaps);
+        setAllocationTargetsLoaded(true);
+        return;
+      }
+
+      if (local?.items?.length) {
+        setAllocationTargetItems(normalizeTargets(local.items));
+        if (local.colors) {
+          setAllocationColors((prev) => ({ ...prev, ...local.colors }));
+        }
+        if (localCaps) setAllocationCaps(localCaps);
+        setAllocationTargetsLoaded(true);
+        return;
+      }
+
+      if (localCaps) setAllocationCaps(localCaps);
+      setAllocationTargetsLoaded(true);
+    })().catch(() => {
+      setAllocationTargetsLoaded(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allocationTargetsLoaded, session]);
+
+  useEffect(() => {
+    setAllocationCaps((prev) => {
+      const next = { ...prev };
+      const allowedKeys = new Set(allocationTargetItems.map((item) => item.key));
+      allocationTargetItems.forEach((item) => {
+        if (!next[item.key]) {
+          next[item.key] = { enabled: false, value: "", pct: "" };
+          return;
+        }
+        if (typeof next[item.key].pct !== "string") {
+          next[item.key] = { ...next[item.key], pct: "" };
+        }
+      });
+      Object.keys(next).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+          delete next[key];
+        }
+      });
+      return next;
+    });
+  }, [allocationTargetItems]);
 
   useEffect(() => {
     setTargetDrafts((prev) => {
@@ -115,6 +389,12 @@ const Portfolio = () => {
     });
   }, [holdings]);
 
+  const allocationPctByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    allocationTargetItems.forEach((item) => map.set(item.key, item.pct));
+    return map;
+  }, [allocationTargetItems]);
+
   const extractTicker = (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return "";
@@ -125,6 +405,13 @@ const Portfolio = () => {
   const resetForm = () => {
     setForm({ ...emptyForm, currency });
     setEditing(null);
+  };
+
+  const closeEdit = () => {
+    resetForm();
+    setMessage(null);
+    setPriceMessage(null);
+    setTickerMessage(null);
   };
 
   const totalCap = useMemo(() => {
@@ -297,33 +584,110 @@ const Portfolio = () => {
     }
   };
 
-  const handleAllocationChange = (
-    key: "cash" | "etf" | "bonds" | "emergency",
-    value: number
-  ) => {
-    setAllocationTargets((prev) => ({
-      ...prev,
-      [key]: value
-    }));
+  const handleAllocationChange = (key: string, value: number) => {
+    if (!Number.isFinite(value)) return;
+    const nextValue = Math.max(0, Math.min(100, value));
+    setAllocationTargetItems((prev) =>
+      prev.map((item) =>
+        item.key === key ? { ...item, pct: nextValue } : item
+      )
+    );
   };
 
-  const handleSaveAllocation = async () => {
+  const handleInvestmentChange = (key: "etf" | "bonds", value: number) => {
+    if (!Number.isFinite(value)) return;
+    const nextValue = Math.max(0, Math.min(100, value));
+    setInvestmentTargets((prev) => {
+      if (key === "etf") {
+        return { etf: nextValue, bonds: Number((100 - nextValue).toFixed(1)) };
+      }
+      return { etf: Number((100 - nextValue).toFixed(1)), bonds: nextValue };
+    });
+  };
+
+  useEffect(() => {
+    if (!session || !allocationTargetsLoaded) return;
+    const snapshot = JSON.stringify({
+      allocationTargetItems,
+      investmentTargets,
+      allocationCaps,
+      allocationColors
+    });
+
+    if (!autoSaveReadyRef.current) {
+      autoSaveReadyRef.current = true;
+      lastSavedRef.current = snapshot;
+      return;
+    }
+
+    if (snapshot === lastSavedRef.current) return;
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      saveAllocation(snapshot, true);
+    }, 800);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [
+    allocationTargetItems,
+    allocationCaps,
+    allocationColors,
+    allocationTargetsLoaded,
+    investmentTargets,
+    session
+  ]);
+
+  const saveAllocation = async (snapshot?: string, silent = false) => {
     if (!session) return;
-    setAllocationMessage(null);
+    if (!silent) setAllocationMessage(null);
+    const localKey = "portfolio_allocation_targets_v1";
+    const getPct = (key: string) => allocationPctByKey.get(key) ?? 0;
     try {
       await upsertSettings({
         user_id: session.user.id,
         base_currency: settings?.base_currency ?? "EUR",
         emergency_fund: emergencyFund,
-        cash_target_cap: useCashCap ? cashCapValue : null,
-        target_cash_pct: allocationTargets.cash,
-        target_etf_pct: allocationTargets.etf,
-        target_bond_pct: allocationTargets.bonds,
-        target_emergency_pct: allocationTargets.emergency,
-        rebalance_months: rebalanceMonths
+        cash_target_cap: cashCapValue ?? null,
+        target_cash_pct: getPct("cash"),
+        target_etf_pct: investmentTargets.etf,
+        target_bond_pct: investmentTargets.bonds,
+        target_emergency_pct: getPct("emergency"),
+        rebalance_months: settings?.rebalance_months ?? 6
       });
-      await refresh();
-      setAllocationMessage("Asset allocation salvata.");
+
+      const itemsWithOrder = allocationTargetItems.map((item, index) => ({
+        user_id: session.user.id,
+        key: item.key,
+        label: item.label,
+        pct: item.pct,
+        color: allocationColors[item.label] ?? null,
+        sort_order: index
+      }));
+
+      const saved = await replaceAllocationTargets(itemsWithOrder);
+      localStorage.setItem(
+        localKey,
+        JSON.stringify({
+          items: allocationTargetItems,
+          colors: allocationColors,
+          caps: allocationCaps
+        })
+      );
+
+      if (!silent) {
+        await refresh();
+        setAllocationMessage(
+          saved
+            ? "Asset allocation salvata."
+            : "Asset allocation salvata in locale (tabella Supabase non trovata)."
+        );
+      }
+      lastSavedRef.current = snapshot ?? null;
     } catch (err) {
       setAllocationMessage((err as Error).message);
     }
@@ -357,120 +721,208 @@ const Portfolio = () => {
     () => buildAccountBalances(accounts, transactions),
     [accounts, transactions]
   );
-  const emergencyFund = settings?.emergency_fund ?? 0;
-  const cashTotal = accountBalances.reduce((sum, item) => sum + item.balance, 0);
+  const emergencyFund = resolveEmergencyFundBalance(
+    accountBalances,
+    settings?.emergency_fund ?? 0
+  );
+  const creditTotal = accountBalances
+    .filter((account) => account.type === "credit")
+    .reduce((sum, account) => sum + account.balance, 0);
+  const cashTotal = accountBalances
+    .filter((account) => account.type !== "credit")
+    .reduce((sum, account) => sum + account.balance, 0);
   const cashAvailable = Math.max(cashTotal - emergencyFund, 0);
-  const etfValue = holdings
-    .filter((item) => item.asset_class === "ETF")
-    .reduce((sum, item) => sum + item.current_value, 0);
-  const bondValue = holdings
-    .filter((item) => item.asset_class === "Obbligazioni")
-    .reduce((sum, item) => sum + item.current_value, 0);
-  const allocationTotal = cashAvailable + emergencyFund + etfValue + bondValue;
+  const holdingsByClass = useMemo(() => {
+    const map = new Map<string, number>();
+    holdings.forEach((item) => {
+      const key = item.asset_class || "Altro";
+      map.set(key, (map.get(key) ?? 0) + item.current_value);
+    });
+    return map;
+  }, [holdings]);
+  const etfValue = holdingsByClass.get("ETF") ?? 0;
+  const bondValue = holdingsByClass.get("Obbligazioni") ?? 0;
+  const cryptoValue = holdingsByClass.get("Crypto") ?? 0;
+  const holdingsTotal = Array.from(holdingsByClass.values()).reduce((sum, value) => sum + value, 0);
+  const allocationTotal = cashAvailable + emergencyFund + holdingsTotal;
   const targetTotal = allocationTotal > 0 ? allocationTotal : 0;
-  const allocationData = [
-    { label: "Cash", value: (allocationTargets.cash / 100) * targetTotal },
-    { label: "ETF", value: (allocationTargets.etf / 100) * targetTotal },
-    {
-      label: "Obbligazioni",
-      value: (allocationTargets.bonds / 100) * targetTotal
-    },
-    {
-      label: "Fondo emergenza",
-      value: (allocationTargets.emergency / 100) * targetTotal
-    }
-  ];
+  const investmentTotalCurrent = Math.max(holdingsTotal - cryptoValue, 0);
+  const generalCurrentData = [
+    { label: "Cash", value: cashAvailable },
+    { label: "Fondo emergenza", value: emergencyFund },
+    { label: "Crypto", value: cryptoValue },
+    { label: "Asset Investimento", value: investmentTotalCurrent }
+  ].filter((item) => Number.isFinite(item.value) && item.value > 0);
+  const capPctByKey = useMemo(() => {
+    const caps = new Map<string, number>();
+    Object.entries(allocationCaps).forEach(([key, cap]) => {
+      if (!cap.enabled) return;
+      const pctRaw = Number(cap.pct);
+      const pctCap =
+        Number.isFinite(pctRaw) && pctRaw > 0 ? Math.min(100, pctRaw) : null;
+      const valueRaw = Number(cap.value);
+      const valueCap =
+        targetTotal > 0 && Number.isFinite(valueRaw) && valueRaw > 0
+          ? Math.min(100, (valueRaw / targetTotal) * 100)
+          : null;
+      const maxPct =
+        pctCap !== null && valueCap !== null
+          ? Math.min(pctCap, valueCap)
+          : pctCap ?? valueCap;
+      if (maxPct === null) return;
+      caps.set(key, maxPct);
+    });
+    return caps;
+  }, [allocationCaps, targetTotal]);
 
-  const allocationGap = [
-    {
-      label: "Cash",
-      current: cashAvailable,
-      target: (allocationTargets.cash / 100) * targetTotal
-    },
+  useEffect(() => {
+    if (!allocationTargetsLoaded) return;
+    setAllocationTargetItems((prev) => {
+      const existing = new Set(prev.map((item) => item.key));
+      const assetKeys = new Set(Array.from(holdingsByClass.keys()));
+      const reserved = new Set(["cash", "emergency", "investments"]);
+      const next = [...prev];
+
+      assetKeys.forEach((key) => {
+        if (reserved.has(key)) return;
+        if (key === "ETF" || key === "Obbligazioni") return;
+        if (existing.has(key)) return;
+        next.push({ key, label: key, pct: 0, kind: "asset" });
+      });
+
+      return next;
+    });
+  }, [allocationTargetsLoaded, holdingsByClass]);
+
+  const investmentTargetData = [
+    { label: "ETF", value: investmentTargets.etf },
+    { label: "Obbligazioni", value: investmentTargets.bonds }
+  ];
+  const investmentCurrentData = [
+    { label: "ETF", value: etfValue },
+    { label: "Obbligazioni", value: bondValue }
+  ];
+  const coreInvestmentTotal = etfValue + bondValue;
+
+  const effectiveTargetPctByKey = useMemo(() => {
+    const round1 = (value: number) => Number(value.toFixed(1));
+    const items = allocationTargetItems.map((item) => {
+      const raw = Number.isFinite(item.pct) ? item.pct : 0;
+      const cap = capPctByKey.get(item.key);
+      const max = cap ?? 100;
+      return {
+        key: item.key,
+        pct: Math.min(raw, max),
+        max
+      };
+    });
+
+    let total = items.reduce((sum, item) => sum + item.pct, 0);
+    if (total > 100 && total > 0) {
+      const factor = 100 / total;
+      items.forEach((item) => {
+        item.pct = item.pct * factor;
+      });
+      total = 100;
+    }
+
+    items.forEach((item) => {
+      item.pct = round1(item.pct);
+    });
+
+    let remaining = 100 - items.reduce((sum, item) => sum + item.pct, 0);
+    if (remaining > 0.05) {
+      for (let i = 0; i < 3; i += 1) {
+        const adjustable = items.filter((item) => item.pct + 0.05 < item.max);
+        if (adjustable.length === 0) break;
+        const adjustableTotal = adjustable.reduce((sum, item) => sum + item.pct, 0);
+        let allocated = 0;
+        adjustable.forEach((item, index) => {
+          const share =
+            adjustableTotal > 0
+              ? (item.pct / adjustableTotal) * remaining
+              : remaining / adjustable.length;
+          if (index === adjustable.length - 1) {
+            const next = Math.min(item.pct + (remaining - allocated), item.max);
+            item.pct = round1(next);
+          } else {
+            const next = Math.min(item.pct + share, item.max);
+            allocated += Math.max(0, next - item.pct);
+            item.pct = round1(next);
+          }
+        });
+        remaining = 100 - items.reduce((sum, item) => sum + item.pct, 0);
+        if (remaining <= 0.05) break;
+      }
+    }
+
+    return new Map(items.map((item) => [item.key, item.pct]));
+  }, [allocationTargetItems, capPctByKey]);
+
+  const generalGap = allocationTargetItems
+    .map((item) => {
+      const current =
+        item.key === "cash"
+          ? cashAvailable
+          : item.key === "emergency"
+            ? emergencyFund
+            : item.key === "investments"
+              ? investmentTotalCurrent
+              : holdingsByClass.get(item.key) ?? 0;
+      const effectivePct = effectiveTargetPctByKey.get(item.key) ?? item.pct;
+      const target = targetTotal > 0 ? (effectivePct / 100) * targetTotal : 0;
+      return {
+        label: item.label,
+        current,
+        target,
+        delta: target - current
+      };
+    })
+    .filter((item) => item.current !== 0 || item.target !== 0);
+
+  const investmentGap = [
     {
       label: "ETF",
       current: etfValue,
-      target: (allocationTargets.etf / 100) * targetTotal
+      target: (investmentTargets.etf / 100) * coreInvestmentTotal,
+      delta: (investmentTargets.etf / 100) * coreInvestmentTotal - etfValue
     },
     {
       label: "Obbligazioni",
       current: bondValue,
-      target: (allocationTargets.bonds / 100) * targetTotal
-    },
-    {
-      label: "Fondo emergenza",
-      current: emergencyFund,
-      target: (allocationTargets.emergency / 100) * targetTotal
+      target: (investmentTargets.bonds / 100) * coreInvestmentTotal,
+      delta: (investmentTargets.bonds / 100) * coreInvestmentTotal - bondValue
     }
-  ].map((item) => ({
-    ...item,
-    delta: item.target - item.current
-  }));
+  ].filter((item) => item.current !== 0 || item.target !== 0);
 
-  const allocationPercentTotal =
-    allocationTargets.cash +
-    allocationTargets.etf +
-    allocationTargets.bonds +
-    allocationTargets.emergency;
+  const allocationPercentTotal = allocationTargetItems.reduce(
+    (sum, item) => sum + (Number.isFinite(item.pct) ? item.pct : 0),
+    0
+  );
   const allocationPercentDisplay = Number(allocationPercentTotal.toFixed(1));
   const allocationPercentWithinRange =
     Math.abs(allocationPercentTotal - 100) <= 0.1;
+  const activeCapsCount = useMemo(
+    () => Object.values(allocationCaps).filter((cap) => cap.enabled).length,
+    [allocationCaps]
+  );
 
-  useEffect(() => {
-    if (!useCashCap || cashCapValue === null || cashCapValue === undefined) return;
-    if (targetTotal <= 0) return;
-    const maxCashPct = Math.min(100, (cashCapValue / targetTotal) * 100);
-    const keys: Array<"etf" | "bonds" | "emergency"> = ["etf", "bonds", "emergency"];
-    const otherTotal = keys.reduce((sum, key) => sum + allocationTargets[key], 0);
-    const remaining = Math.max(0, 100 - maxCashPct);
-    const next = {
-      ...allocationTargets,
-      cash: Number(maxCashPct.toFixed(1))
-    };
-    if (otherTotal <= 0) {
-      const share = keys.length > 0 ? remaining / keys.length : 0;
-      let allocated = 0;
-      keys.forEach((key, index) => {
-        if (index === keys.length - 1) {
-          next[key] = Number((remaining - allocated).toFixed(1));
-        } else {
-          const value = Number(share.toFixed(1));
-          next[key] = value;
-          allocated += value;
-        }
-      });
-    } else {
-      let allocated = 0;
-      keys.forEach((key, index) => {
-        if (index === keys.length - 1) {
-          next[key] = Number((remaining - allocated).toFixed(1));
-        } else {
-          const value = (allocationTargets[key] / otherTotal) * remaining;
-          const rounded = Number(value.toFixed(1));
-          next[key] = rounded;
-          allocated += rounded;
-        }
-      });
-    }
-    const same =
-      keys.every((key) => Math.abs(next[key] - allocationTargets[key]) < 0.05) &&
-      Math.abs(next.cash - allocationTargets.cash) < 0.05;
-    if (same) return;
-    setAllocationTargets(next);
-  }, [
-    cashCapValue,
-    targetTotal,
-    useCashCap,
-    allocationTargets.cash,
-    allocationTargets.etf,
-    allocationTargets.bonds,
-    allocationTargets.emergency
-  ]);
 
   const getClassTargetTotal = (label: string, fallback: number) => {
+    const coreInvestmentTotal = etfValue + bondValue;
+    if (label === "ETF") {
+      return coreInvestmentTotal > 0
+        ? (investmentTargets.etf / 100) * coreInvestmentTotal
+        : fallback;
+    }
+    if (label === "Obbligazioni") {
+      return coreInvestmentTotal > 0
+        ? (investmentTargets.bonds / 100) * coreInvestmentTotal
+        : fallback;
+    }
     if (targetTotal <= 0) return fallback;
-    if (label === "ETF") return (allocationTargets.etf / 100) * targetTotal;
-    if (label === "Obbligazioni") return (allocationTargets.bonds / 100) * targetTotal;
+    const pct = effectiveTargetPctByKey.get(label) ?? allocationPctByKey.get(label);
+    if (pct !== undefined) return (pct / 100) * targetTotal;
     return fallback;
   };
 
@@ -516,6 +968,109 @@ const Portfolio = () => {
     }
   };
 
+  const renderHoldingForm = (
+    submitLabel: string,
+    showCancel: boolean,
+    onCancel?: () => void
+  ) => (
+    <form className="form-grid" onSubmit={handleSubmit}>
+      <input
+        className="input"
+        placeholder="Nome asset"
+        value={form.name}
+        onChange={(event) => setForm({ ...form, name: event.target.value })}
+        required
+      />
+      <input
+        className="input"
+        placeholder="Emoji (opzionale)"
+        value={form.emoji}
+        onChange={(event) => setForm({ ...form, emoji: event.target.value })}
+      />
+      <select
+        className="select"
+        value={form.asset_class}
+        onChange={(event) => setForm({ ...form, asset_class: event.target.value })}
+      >
+        {assetClasses.map((item) => (
+          <option key={item} value={item}>
+            {item}
+          </option>
+        ))}
+      </select>
+      {!isCash && (
+        <input
+          className="input"
+          type="number"
+          step="0.01"
+          placeholder="Costo medio"
+          value={form.avg_cost}
+          onChange={(event) => setForm({ ...form, avg_cost: event.target.value })}
+          required
+        />
+      )}
+      {!isCash && (
+        <input
+          className="input"
+          type="number"
+          step="0.01"
+          placeholder="Quantita"
+          value={form.quantity}
+          onChange={(event) => setForm({ ...form, quantity: event.target.value })}
+          required
+        />
+      )}
+      <input
+        className="input"
+        type="number"
+        step="0.01"
+        placeholder="Total Cap"
+        value={Number.isFinite(totalCap) ? totalCap.toFixed(2) : ""}
+        readOnly
+      />
+      <select
+        className="select"
+        value={form.currency}
+        onChange={(event) => setForm({ ...form, currency: event.target.value })}
+      >
+        <option value="EUR">EUR</option>
+        <option value="USD">USD</option>
+      </select>
+      <input
+        className="input"
+        type="number"
+        step="0.01"
+        placeholder={isCash ? "Importo liquidita" : "Valore attuale"}
+        value={form.current_value}
+        onChange={(event) => setForm({ ...form, current_value: event.target.value })}
+        required
+      />
+      <input
+        className="input"
+        type="date"
+        value={form.start_date}
+        onChange={(event) => setForm({ ...form, start_date: event.target.value })}
+        required
+      />
+      <input
+        className="input"
+        placeholder="Note"
+        value={form.note}
+        onChange={(event) => setForm({ ...form, note: event.target.value })}
+      />
+      <div style={{ display: "flex", gap: "10px" }}>
+        <button className="button" type="submit">
+          {submitLabel}
+        </button>
+        {showCancel && onCancel && (
+          <button type="button" className="button secondary" onClick={onCancel}>
+            Annulla
+          </button>
+        )}
+      </div>
+    </form>
+  );
+
   if (loading) {
     return <div className="card">Caricamento portafoglio...</div>;
   }
@@ -538,120 +1093,286 @@ const Portfolio = () => {
             </p>
           </div>
           <div className="allocation-actions">
-            <select
-              className="select"
-              value={rebalanceMonths}
-              onChange={(event) => setRebalanceMonths(Number(event.target.value))}
-            >
-              {[3, 6, 12].map((value) => (
-                <option key={value} value={value}>
-                  Ribilancia ogni {value} mesi
-                </option>
-              ))}
-            </select>
-            <button className="button secondary" type="button" onClick={handleSaveAllocation}>
-              Salva
-            </button>
+            <div className="allocation-view-toggle">
+              <button
+                className={`view-toggle ${allocationView === "general" ? "active" : ""}`}
+                type="button"
+                onClick={() => setAllocationView("general")}
+              >
+                Generale
+              </button>
+              <button
+                className={`view-toggle ${allocationView === "investment" ? "active" : ""}`}
+                type="button"
+                onClick={() => setAllocationView("investment")}
+              >
+                Investimento
+              </button>
+            </div>
+            <span className="allocation-autosave">Salvataggio automatico</span>
           </div>
         </div>
 
-        <div className="allocation-layout">
+        <div
+          className={`allocation-layout ${
+            allocationView === "investment" ? "investment" : ""
+          }`}
+        >
           <div className="allocation-chart">
-            <DonutChart
-              data={allocationData}
-              valueFormatter={(value) => formatCurrencySafe(value, currency)}
-              colors={allocationColors}
-            />
-            <div className="allocation-summary">
-              <div>
-                <span className="stat-label">Totale attuale</span>
-                <strong>{formatCurrencySafe(allocationTotal, currency)}</strong>
+            {allocationView === "general" ? (
+              <>
+                <DonutChart
+                  data={generalCurrentData}
+                  valueFormatter={(value) => formatCurrencySafe(value, currency)}
+                  colors={allocationColors}
+                />
+                <div className="allocation-summary">
+                  <div>
+                    <span className="stat-label">Totale attuale</span>
+                    <strong>{formatCurrencySafe(allocationTotal, currency)}</strong>
+                  </div>
+                  <div>
+                    <span className="stat-label">Fondo emergenza</span>
+                    <strong>{formatCurrencySafe(emergencyFund, currency)}</strong>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="allocation-investment-grid">
+                <div className="allocation-subchart">
+                  <strong>Target</strong>
+                  <p className="section-subtitle">ETF + Obbligazioni</p>
+                  <DonutChart
+                    data={investmentTargetData}
+                    valueFormatter={(value) => `${value.toFixed(1)}%`}
+                    colors={allocationColors}
+                  />
+                </div>
+                <div className="allocation-subchart">
+                  <strong>Attuale</strong>
+                  <p className="section-subtitle">Valori correnti ETF + Obbligazioni</p>
+                  <DonutChart
+                    data={investmentCurrentData}
+                    valueFormatter={(value) => formatCurrencySafe(value, currency)}
+                    colors={allocationColors}
+                  />
+                </div>
               </div>
-              <div>
-                <span className="stat-label">Fondo emergenza</span>
-                <strong>{formatCurrencySafe(emergencyFund, currency)}</strong>
-              </div>
-            </div>
+            )}
           </div>
 
           <div className="allocation-controls">
-            {[
-              { key: "cash", label: "Cash", colorKey: "Cash" },
-              { key: "etf", label: "ETF", colorKey: "ETF" },
-              { key: "bonds", label: "Obbligazioni", colorKey: "Obbligazioni" },
-              {
-                key: "emergency",
-                label: "Fondo emergenza",
-                colorKey: "Fondo emergenza"
-              }
-            ].map((item) => (
-              <div className="allocation-row" key={item.key}>
-                <div className="allocation-label">
-                  <input
-                    className="color-input"
-                    type="color"
-                    value={allocationColors[item.colorKey]}
-                    onChange={(event) =>
-                      setAllocationColors((prev) => ({
-                        ...prev,
-                        [item.colorKey]: event.target.value
-                      }))
-                    }
-                    aria-label={`Colore ${item.label}`}
-                  />
-                  <strong>{item.label}</strong>
+            {allocationView === "general" ? (
+              <>
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setAddTargetOpen((prev) => !prev)}
+                  >
+                    + Aggiungi asset
+                  </button>
+                  {addTargetOpen && (
+                    <div style={{ display: "flex", gap: "10px", width: "100%" }}>
+                      <select
+                        className="select"
+                        value={newTargetKey}
+                        onChange={(event) => setNewTargetKey(event.target.value)}
+                      >
+                        <option value="">Scegli asset...</option>
+                        {assetClasses
+                          .filter(
+                            (item) =>
+                              item !== "ETF" &&
+                              item !== "Obbligazioni" &&
+                              !allocationTargetItems.some(
+                                (target) => target.key === item
+                              )
+                          )
+                          .map((item) => (
+                            <option key={`target-${item}`} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        className="button secondary small"
+                        type="button"
+                        disabled={!newTargetKey.trim()}
+                        onClick={() => {
+                          const key = newTargetKey.trim();
+                          if (!key) return;
+                          setAllocationTargetItems((prev) => [
+                            ...prev,
+                            { key, label: key, pct: 0, kind: "asset" }
+                          ]);
+                          setAllocationColors((prev) => ({
+                            ...prev,
+                            [key]: prev[key] ?? "#94a3b8"
+                          }));
+                          setNewTargetKey("");
+                          setAddTargetOpen(false);
+                        }}
+                      >
+                        Aggiungi
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <input
-                  className="allocation-slider"
-                  type="range"
-                  min="0"
-                  max="100"
-                  disabled={item.key === "cash" && useCashCap}
-                  value={allocationTargets[item.key as keyof typeof allocationTargets]}
-                  onChange={(event) =>
-                    handleAllocationChange(
-                      item.key as "cash" | "etf" | "bonds" | "emergency",
-                      Number(event.target.value)
-                    )
-                  }
-                />
-                <span className="allocation-value">
-                  {allocationTargets[item.key as keyof typeof allocationTargets]}%
+                {[
+                  ...allocationTargetItems.map((item) => ({
+                    key: item.key,
+                    label: item.label,
+                    colorKey: item.label,
+                    kind: item.kind
+                  }))
+                ].map((item) => (
+                  <div className="allocation-row" key={`allocation-${item.key}`}>
+                    <div className="allocation-label">
+                      <input
+                        className="color-input"
+                        type="color"
+                        value={allocationColors[item.colorKey] ?? "#94a3b8"}
+                        onChange={(event) =>
+                          setAllocationColors((prev) => ({
+                            ...prev,
+                            [item.colorKey]: event.target.value
+                          }))
+                        }
+                        aria-label={`Colore ${item.label}`}
+                      />
+                      <strong>{item.label}</strong>
+                    </div>
+                    <input
+                      className="allocation-slider"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      value={allocationPctByKey.get(item.key) ?? 0}
+                      onChange={(event) =>
+                        handleAllocationChange(item.key, Number(event.target.value))
+                      }
+                    />
+                    <div className="allocation-input">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={(allocationPctByKey.get(item.key) ?? 0).toFixed(1)}
+                        onChange={(event) =>
+                          handleAllocationChange(item.key, Number(event.target.value))
+                        }
+                      />
+                      <span>%</span>
+                    </div>
+                    {item.kind === "asset" &&
+                      item.key !== "ETF" &&
+                      item.key !== "Obbligazioni" &&
+                      item.key !== "investments" && (
+                        <button
+                          className="button ghost small"
+                          type="button"
+                          onClick={() =>
+                            setAllocationTargetItems((prev) =>
+                              prev.filter((target) => target.key !== item.key)
+                            )
+                          }
+                        >
+                          Rimuovi
+                        </button>
+                      )}
+                  </div>
+                ))}
+                <div className="allocation-total">
+                  Totale percentuali: {allocationPercentDisplay}%
+                </div>
+                <div className="allocation-cap">
+                  <button
+                    className="cap-trigger"
+                    type="button"
+                    onClick={() => setCapsModalOpen(true)}
+                  >
+                    <div>
+                      <strong>Limiti massimi per asset</strong>
+                      <span className="section-subtitle">
+                        Gestisci i tetti in valore o percentuale.
+                      </span>
+                    </div>
+                    <span className="cap-badge">
+                      {activeCapsCount > 0 ? `${activeCapsCount} attivi` : "Nessuno"}
+                    </span>
+                  </button>
+                  {creditTotal !== 0 && (
+                    <span className="section-subtitle">
+                      Nota: conti <code>credit</code> esclusi dal calcolo Cash:{" "}
+                      {formatCurrencySafe(creditTotal, currency)}.
+                    </span>
+                  )}
+                </div>
+                {!allocationPercentWithinRange && (
+                  <div className="notice">
+                    Consiglio: porta il totale al 100% per un ribilanciamento corretto.
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {(["etf", "bonds"] as const).map((key) => {
+                  const label = key === "etf" ? "ETF" : "Obbligazioni";
+                  const value = key === "etf" ? investmentTargets.etf : investmentTargets.bonds;
+                  return (
+                    <div className="allocation-row" key={`investment-${key}`}>
+                      <div className="allocation-label">
+                        <input
+                          className="color-input"
+                          type="color"
+                          value={allocationColors[label] ?? "#94a3b8"}
+                          onChange={(event) =>
+                            setAllocationColors((prev) => ({
+                              ...prev,
+                              [label]: event.target.value
+                            }))
+                          }
+                          aria-label={`Colore ${label}`}
+                        />
+                        <strong>{label}</strong>
+                      </div>
+                      <input
+                        className="allocation-slider"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={value}
+                        onChange={(event) =>
+                          handleInvestmentChange(key, Number(event.target.value))
+                        }
+                      />
+                      <div className="allocation-input">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                          value={value.toFixed(1)}
+                          onChange={(event) =>
+                            handleInvestmentChange(key, Number(event.target.value))
+                          }
+                        />
+                        <span>%</span>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="allocation-total">
+                  Totale investito: {(investmentTargets.etf + investmentTargets.bonds).toFixed(1)}%
+                </div>
+                <span className="section-subtitle">
+                  Queste percentuali influenzano solo la vista investimento.
                 </span>
-              </div>
-            ))}
-            <div className="allocation-total">
-              Totale percentuali: {allocationPercentDisplay}%
-            </div>
-            <div className="allocation-cap">
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={useCashCap}
-                  onChange={(event) => setUseCashCap(event.target.checked)}
-                />
-                Usa limite massimo Cash
-              </label>
-              <label>
-                Limite Cash (max)
-                <input
-                  className="input"
-                  type="number"
-                  step="0.01"
-                  placeholder="Nessun limite"
-                  value={cashCapInput}
-                  onChange={(event) => setCashCapInput(event.target.value)}
-                  disabled={!useCashCap}
-                />
-              </label>
-              <span className="section-subtitle">
-                Se impostato, la quota cash viene ridotta al massimo e ridistribuita.
-              </span>
-            </div>
-            {!allocationPercentWithinRange && (
-              <div className="notice">
-                Consiglio: porta il totale al 100% per un ribilanciamento corretto.
-              </div>
+              </>
             )}
           </div>
         </div>
@@ -662,7 +1383,10 @@ const Portfolio = () => {
             <div className="empty">Inserisci dati per calcolare il ribilanciamento.</div>
           ) : (
             <div className="allocation-grid">
-              {allocationGap.map((item) => {
+              {(allocationView === "investment"
+                ? investmentGap
+                : generalGap.filter((item) => !investmentOnlyLabels.has(item.label))
+              ).map((item) => {
                 const action =
                   item.delta > 0
                     ? "Compra"
@@ -673,7 +1397,9 @@ const Portfolio = () => {
                 const actionClass =
                   item.delta > 0 ? "buy" : item.delta < 0 ? "sell" : "hold";
                 const deltaAbs = Math.abs(item.delta);
-                const share = targetTotal > 0 ? (deltaAbs / targetTotal) * 100 : 0;
+                const shareBase =
+                  allocationView === "investment" ? coreInvestmentTotal : targetTotal;
+                const share = shareBase > 0 ? (deltaAbs / shareBase) * 100 : 0;
                 return (
                   <div className={`allocation-item ${actionClass}`} key={item.label}>
                     <div className="allocation-item-header">
@@ -705,117 +1431,134 @@ const Portfolio = () => {
         {allocationMessage && <div className="notice">{allocationMessage}</div>}
       </div>
 
-      <div className="card">
-        <h3>{editing ? "Modifica holding" : "Nuova holding"}</h3>
-        <form className="form-grid" onSubmit={handleSubmit}>
-          <input
-            className="input"
-            placeholder="Nome asset"
-            value={form.name}
-            onChange={(event) => setForm({ ...form, name: event.target.value })}
-            required
-          />
-          <input
-            className="input"
-            placeholder="Emoji (opzionale)"
-            value={form.emoji}
-            onChange={(event) => setForm({ ...form, emoji: event.target.value })}
-          />
-          <select
-            className="select"
-            value={form.asset_class}
-            onChange={(event) =>
-              setForm({ ...form, asset_class: event.target.value })
-            }
-          >
-            {assetClasses.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-          {!isCash && (
-            <input
-              className="input"
-              type="number"
-              step="0.01"
-              placeholder="Costo medio"
-              value={form.avg_cost}
-              onChange={(event) => setForm({ ...form, avg_cost: event.target.value })}
-              required
-            />
-          )}
-          {!isCash && (
-            <input
-              className="input"
-              type="number"
-              step="0.01"
-              placeholder="Quantita"
-              value={form.quantity}
-              onChange={(event) => setForm({ ...form, quantity: event.target.value })}
-              required
-            />
-          )}
-          <input
-            className="input"
-            type="number"
-            step="0.01"
-            placeholder="Total Cap"
-            value={Number.isFinite(totalCap) ? totalCap.toFixed(2) : ""}
-            readOnly
-          />
-          <select
-            className="select"
-            value={form.currency}
-            onChange={(event) => setForm({ ...form, currency: event.target.value })}
-          >
-            <option value="EUR">EUR</option>
-            <option value="USD">USD</option>
-          </select>
-          <input
-            className="input"
-            type="number"
-            step="0.01"
-            placeholder={isCash ? "Importo liquidita" : "Valore attuale"}
-            value={form.current_value}
-            onChange={(event) =>
-              setForm({ ...form, current_value: event.target.value })
-            }
-            required
-          />
-          <input
-            className="input"
-            type="date"
-            value={form.start_date}
-            onChange={(event) => setForm({ ...form, start_date: event.target.value })}
-            required
-          />
-          <input
-            className="input"
-            placeholder="Note"
-            value={form.note}
-            onChange={(event) => setForm({ ...form, note: event.target.value })}
-          />
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button className="button" type="submit">
-              {editing ? "Aggiorna" : "Aggiungi"}
-            </button>
-            {editing && (
+      {capsModalOpen && (
+        <div className="modal-backdrop" onClick={() => setCapsModalOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3>Limiti massimi per asset</h3>
+                <p className="section-subtitle">
+                  Imposta un tetto in valore o percentuale per ogni classe.
+                </p>
+              </div>
               <button
+                className="button ghost small"
                 type="button"
-                className="button secondary"
-                onClick={resetForm}
+                onClick={() => setCapsModalOpen(false)}
               >
-                Annulla
+                Chiudi
               </button>
-            )}
+            </div>
+            <div className="cap-grid">
+              {allocationTargetItems.map((item) => {
+                const cap = allocationCaps[item.key] ?? {
+                  enabled: false,
+                  value: "",
+                  pct: ""
+                };
+                return (
+                  <div className="cap-row" key={`cap-${item.key}`}>
+                    <div className="cap-label">
+                      <span>{item.label}</span>
+                    </div>
+                    <label className="cap-toggle">
+                      <input
+                        type="checkbox"
+                        checked={cap.enabled}
+                        onChange={(event) =>
+                          setAllocationCaps((prev) => ({
+                            ...prev,
+                            [item.key]: {
+                              enabled: event.target.checked,
+                              value: prev[item.key]?.value ?? "",
+                              pct: prev[item.key]?.pct ?? ""
+                            }
+                          }))
+                        }
+                      />
+                      <span className="cap-switch" />
+                    </label>
+                    <div className="cap-input">
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Max valore"
+                        value={cap.value}
+                        onChange={(event) =>
+                          setAllocationCaps((prev) => ({
+                            ...prev,
+                            [item.key]: {
+                              enabled: prev[item.key]?.enabled ?? false,
+                              value: event.target.value,
+                              pct: prev[item.key]?.pct ?? ""
+                            }
+                          }))
+                        }
+                        disabled={!cap.enabled}
+                      />
+                      <span>{currency}</span>
+                    </div>
+                    <div className="cap-input cap-input-pct">
+                      <input
+                        type="number"
+                        step="0.1"
+                        placeholder="Max %"
+                        value={cap.pct}
+                        onChange={(event) =>
+                          setAllocationCaps((prev) => ({
+                            ...prev,
+                            [item.key]: {
+                              enabled: prev[item.key]?.enabled ?? false,
+                              value: prev[item.key]?.value ?? "",
+                              pct: event.target.value
+                            }
+                          }))
+                        }
+                        disabled={!cap.enabled}
+                      />
+                      <span>%</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </form>
-        {message && <div className="notice">{message}</div>}
-        {priceMessage && <div className="notice">{priceMessage}</div>}
-        {tickerMessage && <div className="notice">{tickerMessage}</div>}
-        {error && <div className="error">{error}</div>}
-      </div>
+        </div>
+      )}
+
+      {editing && (
+        <div className="modal-backdrop" onClick={closeEdit}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3>Modifica holding</h3>
+                <p className="section-subtitle">
+                  Aggiorna i dati senza scorrere la pagina.
+                </p>
+              </div>
+              <button className="button ghost small" type="button" onClick={closeEdit}>
+                Chiudi
+              </button>
+            </div>
+            {renderHoldingForm("Aggiorna", true, closeEdit)}
+            {message && <div className="notice">{message}</div>}
+            {priceMessage && <div className="notice">{priceMessage}</div>}
+            {tickerMessage && <div className="notice">{tickerMessage}</div>}
+            {error && <div className="error">{error}</div>}
+          </div>
+        </div>
+      )}
+
+      {!editing && (
+        <div className="card">
+          <h3>Nuova holding</h3>
+          {renderHoldingForm("Aggiungi", false)}
+          {message && <div className="notice">{message}</div>}
+          {priceMessage && <div className="notice">{priceMessage}</div>}
+          {tickerMessage && <div className="notice">{tickerMessage}</div>}
+          {error && <div className="error">{error}</div>}
+        </div>
+      )}
 
       <div className="card">
         <h3>Holdings attive</h3>
@@ -1060,9 +1803,22 @@ const Portfolio = () => {
                                     }))
                                   }
                                 />
-                                <span className="holding-target-value">
-                                  {targetPct.toFixed(1)}%
-                                </span>
+                                <div className="holding-target-input">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    step="0.1"
+                                    value={targetPct.toFixed(1)}
+                                    onChange={(event) =>
+                                      setTargetDrafts((prev) => ({
+                                        ...prev,
+                                        [item.id]: Number(event.target.value)
+                                      }))
+                                    }
+                                  />
+                                  <span>%</span>
+                                </div>
                               </div>
                               <div className="holding-target-values">
                                 <span>

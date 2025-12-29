@@ -86,6 +86,19 @@ create table if not exists public.settings (
   updated_at timestamptz not null default now()
 );
 
+-- Allocation targets (optional, for custom asset allocation sliders)
+create table if not exists public.allocation_targets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  key text not null,
+  label text not null,
+  pct numeric(5, 2) not null default 0,
+  color text,
+  sort_order integer,
+  created_at timestamptz not null default now(),
+  unique (user_id, key)
+);
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -109,6 +122,7 @@ alter table public.transactions enable row level security;
 alter table public.holdings enable row level security;
 alter table public.goals enable row level security;
 alter table public.settings enable row level security;
+alter table public.allocation_targets enable row level security;
 
 create policy "Categories select" on public.categories
   for select using (auth.uid() = user_id);
@@ -126,6 +140,15 @@ create policy "Accounts insert" on public.accounts
 create policy "Accounts update" on public.accounts
   for update using (auth.uid() = user_id);
 create policy "Accounts delete" on public.accounts
+  for delete using (auth.uid() = user_id);
+
+create policy "Allocation targets select" on public.allocation_targets
+  for select using (auth.uid() = user_id);
+create policy "Allocation targets insert" on public.allocation_targets
+  for insert with check (auth.uid() = user_id);
+create policy "Allocation targets update" on public.allocation_targets
+  for update using (auth.uid() = user_id);
+create policy "Allocation targets delete" on public.allocation_targets
   for delete using (auth.uid() = user_id);
 
 create policy "Transactions select" on public.transactions

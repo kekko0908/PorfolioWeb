@@ -1,5 +1,13 @@
 import { supabase } from "./supabaseClient";
-import type { Account, Category, Goal, Holding, Setting, Transaction } from "../types";
+import type {
+  Account,
+  AllocationTarget,
+  Category,
+  Goal,
+  Holding,
+  Setting,
+  Transaction
+} from "../types";
 
 const handleError = (error: unknown) => {
   if (error) {
@@ -9,6 +17,17 @@ const handleError = (error: unknown) => {
 
 const toNumber = (value: unknown) =>
   value === null || value === undefined ? 0 : Number(value);
+
+const isMissingRelationError = (error: unknown) => {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: string; message?: string };
+  if (err.code === "42P01") return true;
+  if (typeof err.message !== "string") return false;
+  if (/does not exist/i.test(err.message)) return true;
+  if (/schema cache/i.test(err.message)) return true;
+  if (/Could not find the table/i.test(err.message)) return true;
+  return false;
+};
 
 export const fetchCategories = async (): Promise<Category[]> => {
   const { data, error } = await supabase
@@ -237,4 +256,46 @@ export const upsertSettings = async (
     onConflict: "user_id"
   });
   handleError(error);
+};
+
+export const fetchAllocationTargets = async (): Promise<AllocationTarget[]> => {
+  const { data, error } = await supabase
+    .from("allocation_targets")
+    .select("*")
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (isMissingRelationError(error)) return [];
+  handleError(error);
+
+  return (data ?? []).map((item) => ({
+    ...item,
+    pct: toNumber(item.pct),
+    sort_order: item.sort_order ?? null,
+    color: item.color ?? null
+  })) as AllocationTarget[];
+};
+
+export const replaceAllocationTargets = async (
+  payloads: Array<
+    Pick<AllocationTarget, "user_id" | "key" | "label"> &
+      Partial<Pick<AllocationTarget, "color" | "sort_order">> & { pct: number }
+  >
+): Promise<boolean> => {
+  if (payloads.length === 0) return true;
+  const userId = payloads[0].user_id;
+
+  const { error: deleteError } = await supabase
+    .from("allocation_targets")
+    .delete()
+    .eq("user_id", userId);
+
+  if (isMissingRelationError(deleteError)) return false;
+  handleError(deleteError);
+
+  const { error: insertError } = await supabase.from("allocation_targets").insert(payloads);
+  if (isMissingRelationError(insertError)) return false;
+  handleError(insertError);
+
+  return true;
 };

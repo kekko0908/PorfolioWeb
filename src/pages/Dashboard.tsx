@@ -11,6 +11,7 @@ import {
   calculateSavingsRate,
   groupExpensesByCategory,
   groupHoldingsByAssetClass,
+  resolveEmergencyFundBalance,
   sumHoldingsCost
 } from "../lib/metrics";
 import {
@@ -39,7 +40,6 @@ const Dashboard = () => {
   const netWorth = calculateNetWorth(holdings, transactions);
   const savingsRate = calculateSavingsRate(transactions);
   const burnRate = calculateMonthlyBurnRate(transactions, categories);
-  const runway = burnRate > 0 ? (settings?.emergency_fund ?? 0) / burnRate : 0;
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
   const totalCap = sumHoldingsCost(holdings);
@@ -47,6 +47,11 @@ const Dashboard = () => {
   const cashflowSeries = buildMonthlySeries(transactions, 6);
   const portfolioSeries = buildPortfolioSeries(holdings, 12);
   const accountBalances = buildAccountBalances(accounts, transactions);
+  const emergencyFund = resolveEmergencyFundBalance(
+    accountBalances,
+    settings?.emergency_fund ?? 0
+  );
+  const runway = burnRate > 0 ? emergencyFund / burnRate : 0;
   const cashTotal = accountBalances.reduce((sum, item) => sum + item.balance, 0);
   const allocationBase = groupHoldingsByAssetClass(holdings);
   const allocation =
@@ -162,7 +167,7 @@ const Dashboard = () => {
                   <span className="account-emoji">
                     {account.emoji && account.emoji.trim() ? account.emoji : "O"}
                   </span>
-                  <div>
+                  <div className="account-info">
                     <strong>{account.name}</strong>
                     <span className="section-subtitle">
                       {accountTypeLabels[account.type] ?? account.type}

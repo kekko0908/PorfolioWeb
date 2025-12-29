@@ -92,3 +92,14 @@ export interface MonthlyPoint {
   income: number;
   expense: number;
 }
+
+export interface AllocationTarget {
+  id: string;
+  user_id: string;
+  key: string;
+  label: string;
+  pct: number;
+  color: string | null;
+  sort_order: number | null;
+  created_at: string;
+}

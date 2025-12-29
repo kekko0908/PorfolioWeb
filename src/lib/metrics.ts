@@ -216,3 +216,14 @@ export const buildAccountBalances = (
     balance: totals.get(account.id) ?? 0
   }));
 };
+
+export const resolveEmergencyFundBalance = (
+  accountBalances: Array<Account & { balance: number }>,
+  fallback = 0
+) => {
+  const matches = accountBalances.filter((account) =>
+    /emergenza|emergency/i.test(account.name)
+  );
+  if (matches.length === 0) return fallback;
+  return matches.reduce((sum, account) => sum + toNumber(account.balance), 0);
+};
