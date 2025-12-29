@@ -11,7 +11,14 @@ import {
   upsertSettings
 } from "../lib/api";
 import { supabase } from "../lib/supabaseClient";
-import type { Account, AccountType, TransactionType } from "../types";
+import type {
+  Account,
+  AccountType,
+  Currency,
+  FlowDirection,
+  Transaction,
+  TransactionType
+} from "../types";
 
 const accountTypes: { value: AccountType; label: string }[] = [
   { value: "bank", label: "Banca" },
@@ -525,6 +532,7 @@ const Settings = () => {
         setImportMessage("Crea almeno un conto prima di importare transazioni.");
         return;
       }
+      type TransactionInsert = Omit<Transaction, "id" | "created_at" | "user_id">;
       const text = await file.text();
       const rows = parseCsv(text);
       if (rows.length < 2) {
@@ -533,7 +541,7 @@ const Settings = () => {
       }
       const headers = normalizeHeaders(rows[0]);
       const defaultAccountId = accounts[0]?.id ?? "";
-      const payloads = rows.slice(1).map((cells) => {
+      const payloads: TransactionInsert[] = rows.slice(1).map((cells) => {
         const record = headers.reduce<Record<string, string>>((acc, header, index) => {
           acc[header] = cells[index]?.trim() ?? "";
           return acc;
@@ -545,7 +553,7 @@ const Settings = () => {
             : "income"
           : "expense";
         const type = (record.type as TransactionType) || inferredType;
-        const flow =
+        const flow: FlowDirection =
           type === "income"
             ? "in"
             : type === "expense"
@@ -559,7 +567,7 @@ const Settings = () => {
           defaultAccountId;
         const categoryId =
           record.category_id || resolveApprox(categoryNameToId, record.category_name);
-        const currency = record.currency === "USD" ? "USD" : "EUR";
+        const currency: Currency = record.currency === "USD" ? "USD" : "EUR";
         return {
           date: record.date,
           type,

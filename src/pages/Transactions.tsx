@@ -9,7 +9,7 @@ import {
   updateTransaction
 } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
-import type { Category, Transaction, TransactionType } from "../types";
+import type { Category, Currency, Transaction, TransactionType } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
 
@@ -327,6 +327,10 @@ const Transactions = () => {
       type: item.type,
       flow: item.flow,
       account_id: item.account_id,
+      transfer_from_id:
+        item.type === "transfer" && item.flow === "out" ? item.account_id : "",
+      transfer_to_id:
+        item.type === "transfer" && item.flow === "in" ? item.account_id : "",
       category_id: item.category_id,
       amount: String(item.amount),
       currency: item.currency,
@@ -516,7 +520,9 @@ const Transactions = () => {
           <select
             className="select"
             value={form.currency}
-            onChange={(event) => setForm({ ...form, currency: event.target.value })}
+            onChange={(event) =>
+              setForm({ ...form, currency: event.target.value as Currency })
+            }
             disabled={isTransfer || Boolean(form.account_id)}
           >
             <option value="EUR">EUR</option>
@@ -693,4 +699,3 @@ const Transactions = () => {
 };
 
 export default Transactions;
-

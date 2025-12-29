@@ -120,7 +120,7 @@ const Portfolio = () => {
   ]);
   const [addTargetOpen, setAddTargetOpen] = useState(false);
   const [newTargetKey, setNewTargetKey] = useState("");
-  const [allocationColors, setAllocationColors] = useState({
+  const [allocationColors, setAllocationColors] = useState<Record<string, string>>({
     Cash: "#22c55e",
     ETF: "#ef4444",
     Obbligazioni: "#f59e0b",
@@ -250,15 +250,20 @@ const Portfolio = () => {
     ) => {
       if (!caps) return undefined;
       const next: Record<string, AllocationCap> = {};
+      const isLegacyCap = (
+        value: AllocationCap | { enabled?: boolean; value?: string; pct?: string }
+      ): value is { enabled?: boolean; value?: string; pct?: string } =>
+        typeof value === "object" && value !== null && "enabled" in value;
       Object.entries(caps).forEach(([key, cap]) => {
         const rawMode = (cap as AllocationCap)?.mode;
         const rawValue = typeof cap?.value === "string" ? cap.value : "";
         const parsedValue = parseNumberInput(rawValue);
         const hasValue = rawValue.trim() !== "" && Number.isFinite(parsedValue);
+        const legacyEnabled = isLegacyCap(cap) && Boolean(cap.enabled);
         const mode =
           rawMode === "set" || rawMode === "off" || rawMode === "rel"
             ? rawMode
-            : cap?.enabled && hasValue
+            : legacyEnabled && hasValue
               ? "set"
               : "rel";
         next[key] = {
@@ -270,7 +275,9 @@ const Portfolio = () => {
       return next;
     };
 
-    const normalizeTargets = (items: AllocationTargetItem[]) => {
+    const normalizeTargets = (
+      items: AllocationTargetItem[]
+    ): AllocationTargetItem[] => {
       const legacyInvestmentPct = items.reduce((sum, item) => {
         if (item.key === "ETF" || item.key === "Obbligazioni") {
           return sum + (Number.isFinite(item.pct) ? item.pct : 0);
@@ -303,10 +310,12 @@ const Portfolio = () => {
             item.key !== "investments" &&
             item.label !== "Asset Investimento"
         )
-        .map((item) => ({
-          ...item,
-          kind: item.key === "cash" || item.key === "emergency" ? "reserve" : "asset"
-        }));
+        .map(
+          (item): AllocationTargetItem => ({
+            ...item,
+            kind: item.key === "cash" || item.key === "emergency" ? "reserve" : "asset"
+          })
+        );
 
       const cashItem =
         normalized.find((item) => item.key === "cash") ??
@@ -347,7 +356,7 @@ const Portfolio = () => {
 
       if (storedTargets.length > 0) {
         const normalizedTargets = normalizeTargets(
-          storedTargets.map((item) => ({
+          storedTargets.map<AllocationTargetItem>((item) => ({
             key: item.key,
             label: item.label,
             pct: item.pct,
@@ -1852,7 +1861,7 @@ const Portfolio = () => {
                   allocationTargetsMeta.emergencyAutoTarget !== null;
                 const mode = isEmergencyAuto ? "set" : cap.mode;
                 const value = isEmergencyAuto
-                  ? allocationTargetsMeta.emergencyAutoTarget
+                  ? allocationTargetsMeta.emergencyAutoTarget ?? ""
                   : cap.value;
                 return (
                   <div className="cap-row" key={`cap-${item.key}`}>
