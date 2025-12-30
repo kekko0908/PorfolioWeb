@@ -9,6 +9,7 @@ import Portfolio from "./pages/Portfolio";
 import Transactions from "./pages/Transactions";
 import TransactionsFilter from "./pages/TransactionsFilter";
 import Goals from "./pages/Goals";
+import Budget from "./pages/Budget";
 import Categories from "./pages/Categories";
 import Analytics from "./pages/Analytics";
 import StressTest from "./pages/StressTest";
@@ -51,6 +52,7 @@ const AppRoutes = () => {
         <Route path="transactions" element={<Transactions />} />
         <Route path="transactions/filter" element={<TransactionsFilter />} />
         <Route path="goals" element={<Goals />} />
+        <Route path="goals/budget" element={<Budget />} />
         <Route path="categories" element={<Categories />} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="analytics/stress-test" element={<StressTest />} />

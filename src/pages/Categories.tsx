@@ -9,6 +9,16 @@ import {
 } from "../lib/api";
 import type { Category, CategoryType } from "../types";
 
+const correctionCategoryName = "Correzione Saldo";
+
+const normalizeKey = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+
+const correctionKey = normalizeKey(correctionCategoryName);
+
+const isCorrectionCategory = (category: Category) =>
+  normalizeKey(category.name) === correctionKey;
+
 const emptyForm = {
   name: "",
   type: "expense" as CategoryType,
@@ -23,12 +33,17 @@ const Categories = () => {
   const [editing, setEditing] = useState<Category | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  const visibleCategories = useMemo(
+    () => categories.filter((category) => !isCorrectionCategory(category)),
+    [categories]
+  );
+
   const parentOptions = useMemo(
     () =>
-      categories.filter(
+      visibleCategories.filter(
         (category) => !category.parent_id && category.type === form.type
       ),
-    [categories, form.type]
+    [visibleCategories, form.type]
   );
 
   const grouped = useMemo(() => {
@@ -37,11 +52,11 @@ const Categories = () => {
       expense: [],
       investment: []
     };
-    categories.forEach((category) => {
+    visibleCategories.forEach((category) => {
       byType[category.type].push(category);
     });
     return byType;
-  }, [categories]);
+  }, [visibleCategories]);
 
   const resetForm = () => {
     setForm(emptyForm);
@@ -51,6 +66,10 @@ const Categories = () => {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage(null);
+    if (normalizeKey(form.name) === correctionKey) {
+      setMessage("Categoria riservata al sistema.");
+      return;
+    }
     const payload = {
       name: form.name,
       type: form.type,

@@ -3,6 +3,7 @@ import type {
   Account,
   AllocationTarget,
   Category,
+  CategoryBudget,
   Goal,
   Holding,
   Setting,
@@ -320,4 +321,37 @@ export const replaceAllocationTargets = async (
   handleError(insertError);
 
   return true;
+};
+
+export const fetchCategoryBudgets = async (): Promise<CategoryBudget[]> => {
+  const { data, error } = await supabase
+    .from("category_budgets")
+    .select("*")
+    .order("created_at", { ascending: true });
+  if (isMissingRelationError(error)) return [];
+  handleError(error);
+  return (data ?? []).map((item) => ({
+    ...item,
+    cap_amount:
+      item.cap_amount === null || item.cap_amount === undefined
+        ? null
+        : toNumber(item.cap_amount),
+    period_key: typeof item.period_key === "string" ? item.period_key : ""
+  })) as CategoryBudget[];
+};
+
+export const upsertCategoryBudgets = async (
+  payloads: Array<
+    Pick<CategoryBudget, "user_id" | "category_id"> & {
+      cap_amount: number | null;
+      color?: string | null;
+      period_key: string;
+    }
+  >
+): Promise<void> => {
+  if (payloads.length === 0) return;
+  const { error } = await supabase.from("category_budgets").upsert(payloads, {
+    onConflict: "user_id,category_id"
+  });
+  handleError(error);
 };

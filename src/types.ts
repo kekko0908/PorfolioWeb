@@ -104,3 +104,14 @@ export interface AllocationTarget {
   sort_order: number | null;
   created_at: string;
 }
+
+export interface CategoryBudget {
+  id: string;
+  user_id: string;
+  category_id: string;
+  cap_amount: number | null;
+  color: string | null;
+  period_key: string;
+  created_at: string;
+  updated_at: string;
+}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
   buildAccountBalances,
@@ -8,6 +8,7 @@ import {
   calculateMonthlyBurnRate,
   calculateRoi,
   calculateSavingsRate,
+  filterBalanceCorrectionTransactions,
   groupExpensesByCategory,
   groupHoldingsByAssetClass,
   resolveEmergencyFundBalance,
@@ -37,14 +38,14 @@ const Dashboard = () => {
     usePortfolioData();
   const [allocationFocus, setAllocationFocus] = useState<string | null>(null);
   const currency = settings?.base_currency ?? "EUR";
-  const savingsRate = calculateSavingsRate(transactions);
+  const savingsRate = calculateSavingsRate(transactions, categories);
   const burnRate = calculateMonthlyBurnRate(transactions, categories);
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
   const totalCap = sumHoldingsCost(holdings);
   const capitalGain = sumHoldingsValue(holdings) - totalCap;
 
-  const cashflowSeries = buildMonthlySeries(transactions, 6);
+  const cashflowSeries = buildMonthlySeries(transactions, 6, categories);
   const portfolioSeries = buildPortfolioSeries(holdings, 12);
   const accountBalances = buildAccountBalances(accounts, transactions);
   const netWorth =
@@ -87,11 +88,17 @@ const Dashboard = () => {
   const expenseMix = groupExpensesByCategory(transactions, categories);
   const topExpenses = expenseMix.slice(0, 4);
   const expenseTotal = expenseMix.reduce((sum, item) => sum + item.value, 0);
-  const expenseCount = transactions.filter((item) => item.type === "expense").length;
+  const filteredTransactions = useMemo(
+    () => filterBalanceCorrectionTransactions(transactions, categories),
+    [transactions, categories]
+  );
+  const expenseCount = filteredTransactions.filter((item) => item.type === "expense").length;
 
   const now = new Date();
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const monthTransactions = transactions.filter((item) => item.date.startsWith(monthKey));
+  const monthTransactions = filteredTransactions.filter((item) =>
+    item.date.startsWith(monthKey)
+  );
   const monthIncome = monthTransactions
     .filter((item) => item.type === "income")
     .reduce((sum, item) => sum + item.amount, 0);

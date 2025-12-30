@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
   buildAccountBalances,
@@ -6,6 +6,7 @@ import {
   calculateCagr,
   calculateRoi,
   calculateSavingsRate,
+  filterBalanceCorrectionTransactions,
   groupExpensesByCategory,
   groupHoldingsByAssetClass,
   sumHoldingsCost,
@@ -25,11 +26,11 @@ const Analytics = () => {
 
   const roi = calculateRoi(holdings);
   const cagr = calculateCagr(holdings);
-  const savingsRate = calculateSavingsRate(transactions);
+  const savingsRate = calculateSavingsRate(transactions, categories);
   const totalCap = sumHoldingsCost(holdings);
   const capitalGain = sumHoldingsValue(holdings) - totalCap;
 
-  const cashflowSeries = buildMonthlySeries(transactions, range);
+  const cashflowSeries = buildMonthlySeries(transactions, range, categories);
   const accountBalances = buildAccountBalances(accounts, transactions);
   const netWorth =
     sumHoldingsValue(holdings) +
@@ -59,7 +60,11 @@ const Analytics = () => {
       : [];
   const expenseMix = groupExpensesByCategory(transactions, categories);
   const expenseTotal = expenseMix.reduce((sum, item) => sum + item.value, 0);
-  const expenseCount = transactions.filter((item) => item.type === "expense").length;
+  const filteredTransactions = useMemo(
+    () => filterBalanceCorrectionTransactions(transactions, categories),
+    [transactions, categories]
+  );
+  const expenseCount = filteredTransactions.filter((item) => item.type === "expense").length;
   const expenseAvg = expenseCount > 0 ? expenseTotal / expenseCount : 0;
   const topExpenses = expenseMix.slice(0, 5);
 

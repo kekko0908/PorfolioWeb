@@ -1,6 +1,7 @@
 import type { Account, Category, Holding, MonthlyPoint, Transaction } from "../types";
 
 const toNumber = (value: number | null | undefined) => (value ? value : 0);
+const correctionCategoryName = "Correzione Saldo";
 
 export const sumHoldingsValue = (holdings: Holding[]) =>
   holdings.reduce((sum, item) => sum + toNumber(item.current_value), 0);
@@ -36,18 +37,63 @@ export const calculateCagr = (holdings: Holding[]) => {
   return weighted / totalWeight;
 };
 
-export const calculateCashBalance = (transactions: Transaction[]) =>
-  transactions.reduce(
+const normalizeKey = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+
+const correctionKey = normalizeKey(correctionCategoryName);
+
+const buildCategoryKeyMap = (categories?: Category[]) => {
+  if (!categories) return null;
+  const map = new Map<string, string>();
+  categories.forEach((category) => {
+    map.set(category.id, normalizeKey(category.name));
+  });
+  return map;
+};
+
+export const isBalanceCorrectionTransaction = (
+  transaction: Transaction,
+  categoryKeyById?: Map<string, string> | null
+) => {
+  const noteKey = transaction.note ? normalizeKey(transaction.note) : "";
+  if (noteKey && noteKey === correctionKey) return true;
+  if (categoryKeyById) {
+    const categoryKey = categoryKeyById.get(transaction.category_id);
+    if (categoryKey && categoryKey === correctionKey) return true;
+  }
+  return false;
+};
+
+export const filterBalanceCorrectionTransactions = (
+  transactions: Transaction[],
+  categories?: Category[]
+) => {
+  const categoryKeyById = buildCategoryKeyMap(categories);
+  return transactions.filter(
+    (transaction) =>
+      !isBalanceCorrectionTransaction(transaction, categoryKeyById)
+  );
+};
+
+export const calculateCashBalance = (
+  transactions: Transaction[],
+  categories?: Category[]
+) =>
+  filterBalanceCorrectionTransactions(transactions, categories).reduce(
     (sum, item) => sum + (item.flow === "in" ? item.amount : -item.amount),
     0
   );
 
-export const calculateSavingsRate = (transactions: Transaction[]) => {
-  const income = transactions
+export const calculateSavingsRate = (
+  transactions: Transaction[],
+  categories?: Category[]
+) => {
+  const filtered = filterBalanceCorrectionTransactions(transactions, categories);
+  const income = filtered
     .filter((item) => item.type === "income")
     .reduce((sum, item) => sum + item.amount, 0);
   if (income === 0) return 0;
-  const expense = transactions
+  const expense = filtered
     .filter((item) => item.type === "expense")
     .reduce((sum, item) => sum + item.amount, 0);
   return (income - expense) / income;
@@ -57,12 +103,13 @@ export const calculateMonthlyBurnRate = (
   transactions: Transaction[],
   categories: Category[]
 ) => {
+  const filtered = filterBalanceCorrectionTransactions(transactions, categories);
   const fixedCategoryIds = new Set(
     categories.filter((category) => category.is_fixed).map((category) => category.id)
   );
   const now = new Date();
   const last30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const fixedTotal = transactions
+  const fixedTotal = filtered
     .filter(
       (item) =>
         item.type === "expense" &&
@@ -71,7 +118,7 @@ export const calculateMonthlyBurnRate = (
     )
     .reduce((sum, item) => sum + item.amount, 0);
   if (fixedTotal > 0) return fixedTotal;
-  return transactions
+  return filtered
     .filter(
       (item) => item.type === "expense" && new Date(item.date) >= last30
     )
@@ -93,8 +140,10 @@ const formatMonthLabel = (date: Date) =>
 
 export const buildMonthlySeries = (
   transactions: Transaction[],
-  months = 6
+  months = 6,
+  categories?: Category[]
 ): MonthlyPoint[] => {
+  const filtered = filterBalanceCorrectionTransactions(transactions, categories);
   const series: MonthlyPoint[] = [];
   const keyed = new Map<string, MonthlyPoint>();
   const now = new Date();
@@ -111,7 +160,7 @@ export const buildMonthlySeries = (
     keyed.set(monthKey(date), point);
   }
 
-  transactions.forEach((item) => {
+  filtered.forEach((item) => {
     const target = keyed.get(monthKey(new Date(item.date)));
     if (!target) return;
     if (item.type === "income") {
@@ -178,7 +227,7 @@ export const groupExpensesByCategory = (
   const categoryMap = new Map(categories.map((category) => [category.id, category]));
   const totals = new Map<string, number>();
 
-  transactions
+  filterBalanceCorrectionTransactions(transactions, categories)
     .filter((item) => item.type === "expense")
     .forEach((item) => {
       const name = categoryMap.get(item.category_id)?.name ?? "Altro";

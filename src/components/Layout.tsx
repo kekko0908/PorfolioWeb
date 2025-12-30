@@ -13,7 +13,11 @@ const navItems = [
     label: "Transazioni",
     children: [{ to: "/transactions/filter", label: "Filtra per" }]
   },
-  { to: "/goals", label: "Obiettivi" },
+  {
+    to: "/goals",
+    label: "Obiettivi",
+    children: [{ to: "/goals/budget", label: "Budget" }]
+  },
   { to: "/categories", label: "Categorie" },
   {
     to: "/analytics",

@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Account, Category, Goal, Holding, Setting, Transaction } from "../types";
+import type {
+  Account,
+  Category,
+  CategoryBudget,
+  Goal,
+  Holding,
+  Setting,
+  Transaction
+} from "../types";
 import {
   createAccount,
   fetchAccounts,
+  fetchCategoryBudgets,
   fetchCategories,
   fetchGoals,
   fetchHoldings,
@@ -13,6 +22,7 @@ import {
 export const usePortfolioData = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -34,14 +44,16 @@ export const usePortfolioData = () => {
         nextGoals,
         nextTransactions,
         nextHoldings,
-        nextSettings
+        nextSettings,
+        nextCategoryBudgets
       ] = await Promise.all([
         fetchAccounts(),
         fetchCategories(),
         fetchGoals(),
         fetchTransactions(),
         fetchHoldings(),
-        fetchSettings()
+        fetchSettings(),
+        fetchCategoryBudgets()
       ]);
       let accountsToUse = nextAccounts;
       if (!hasEmergencyAccount(nextAccounts) && !creatingEmergencyRef.current) {
@@ -63,6 +75,7 @@ export const usePortfolioData = () => {
       }
       setAccounts(accountsToUse);
       setCategories(nextCategories);
+      setCategoryBudgets(nextCategoryBudgets);
       setGoals(nextGoals);
       setTransactions(nextTransactions);
       setHoldings(nextHoldings);
@@ -81,6 +94,7 @@ export const usePortfolioData = () => {
   return {
     accounts,
     categories,
+    categoryBudgets,
     goals,
     transactions,
     holdings,

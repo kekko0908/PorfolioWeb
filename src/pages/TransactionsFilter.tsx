@@ -3,9 +3,19 @@ import { useNavigate } from "react-router-dom";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import { deleteTransaction } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
+import { filterBalanceCorrectionTransactions } from "../lib/metrics";
 import type { Category, TransactionType } from "../types";
 
 const weekdayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+const correctionCategoryName = "Correzione Saldo";
+
+const normalizeKey = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+
+const correctionKey = normalizeKey(correctionCategoryName);
+
+const isCorrectionCategory = (category: Category) =>
+  normalizeKey(category.name) === correctionKey;
 
 type CategoryWithChildren = Category & { children: Category[] };
 type CalendarView = "month" | "week" | "year";
@@ -84,10 +94,11 @@ const TransactionsFilter = () => {
       filterType === "all" || filterType === "transfer"
         ? categories
         : categories.filter((category) => category.type === filterType);
-    const parents = candidates.filter((category) => !category.parent_id);
+    const visible = candidates.filter((category) => !isCorrectionCategory(category));
+    const parents = visible.filter((category) => !category.parent_id);
     return parents.map((parent) => ({
       ...parent,
-      children: candidates.filter((child) => child.parent_id === parent.id)
+      children: visible.filter((child) => child.parent_id === parent.id)
     }));
   }, [categories, filterType]);
 
@@ -114,6 +125,11 @@ const TransactionsFilter = () => {
     filterQuery,
     categoryMap
   ]);
+
+  const totalTransactions = useMemo(
+    () => filterBalanceCorrectionTransactions(filteredTransactions, categories),
+    [filteredTransactions, categories]
+  );
 
   const monthMeta = useMemo(() => {
     const [yearRaw, monthRaw] = calendarMonth.split("-");
@@ -207,7 +223,7 @@ const TransactionsFilter = () => {
 
   const calendarTotals = useMemo(() => {
     const totals = new Map<string, { income: number; expense: number }>();
-    filteredTransactions.forEach((item) => {
+    totalTransactions.forEach((item) => {
       if (calendarView === "month") {
         if (!item.date.startsWith(`${monthMeta.year}-${monthMeta.monthStr}`)) {
           return;
@@ -226,7 +242,7 @@ const TransactionsFilter = () => {
       totals.set(key, current);
     });
     return totals;
-  }, [filteredTransactions, calendarView, monthMeta, weekMeta, yearMeta]);
+  }, [totalTransactions, calendarView, monthMeta, weekMeta, yearMeta]);
 
   const calendarSummary = useMemo(() => {
     let income = 0;

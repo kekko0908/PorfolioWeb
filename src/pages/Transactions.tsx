@@ -8,28 +8,12 @@ import {
   seedDefaultCategories,
   updateTransaction
 } from "../lib/api";
-import { formatCurrency, formatDate } from "../lib/format";
+import { formatCurrency, formatCurrencySafe, formatDate, formatPercent } from "../lib/format";
+import { buildCategoryIcons } from "../lib/categoryIcons";
+import { buildAccountBalances, filterBalanceCorrectionTransactions } from "../lib/metrics";
 import type { Category, Currency, Transaction, TransactionType } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
-
-const iconByName: Record<string, string> = {
-  "Reddito da Lavoro": "\u{1F4BC}",
-  "Extra & Side Hustle": "\u{1F6E0}",
-  "Regali & Aiuti": "\u{1F381}",
-  Regali: "\u{1F381}",
-  "Rimborsi & Tecnici": "\u{1F9FE}",
-  "Casa & Utenze": "\u{1F3E0}",
-  Alimentazione: "\u{1F37D}",
-  Trasporti: "\u{1F697}",
-  "Salute & Cura Personale": "\u{1FA7A}",
-  "Svago & Lifestyle": "\u{1F389}",
-  "Finanza & Obblighi": "\u{1F4D1}",
-  "Famiglia & Altro": "\u{1F46A}",
-  "Versamenti (Input Capitale)": "\u{1F4C8}",
-  "Rendita Generata (Flusso Positivo)": "\u{1F4B8}",
-  "Disinvestimenti (Output Capitale)": "\u{1F4C9}"
-};
 
 type CategoryWithChildren = Category & { children: Category[] };
 
@@ -46,9 +30,27 @@ const emptyForm = {
   note: ""
 };
 
+const correctionCategoryName = "Correzione Saldo";
+
+const normalizeKey = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+
+const correctionKey = normalizeKey(correctionCategoryName);
+
+const isCorrectionCategory = (category: Category) =>
+  normalizeKey(category.name) === correctionKey;
+
 const Transactions = () => {
-  const { accounts, categories, transactions, settings, refresh, loading, error } =
-    usePortfolioData();
+  const {
+    accounts,
+    categories,
+    categoryBudgets,
+    transactions,
+    settings,
+    refresh,
+    loading,
+    error
+  } = usePortfolioData();
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -57,23 +59,16 @@ const Transactions = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const currency = settings?.base_currency ?? "EUR";
+  const activeMonthKey = (form.date || today).slice(0, 7);
 
-  const categoryIcons = useMemo(() => {
-    const byId = new Map<string, string>();
-    const lookup = new Map(categories.map((category) => [category.id, category]));
-    categories.forEach((category) => {
-      const parent = category.parent_id ? lookup.get(category.parent_id) : null;
-      const icon =
-        iconByName[category.name] ??
-        (parent ? iconByName[parent.name] : undefined) ??
-        "\u{1F4CC}";
-      byId.set(category.id, icon);
-    });
-    return byId;
-  }, [categories]);
+  const categoryIcons = useMemo(() => buildCategoryIcons(categories), [categories]);
 
   const categoryMap = useMemo(
     () => new Map(categories.map((category) => [category.id, category.name])),
+    [categories]
+  );
+  const categoryById = useMemo(
+    () => new Map(categories.map((category) => [category.id, category])),
     [categories]
   );
   const accountMap = useMemo(
@@ -100,9 +95,56 @@ const Transactions = () => {
     () =>
       form.type === "transfer"
         ? []
-        : categories.filter((category) => category.type === form.type),
+        : categories.filter(
+            (category) =>
+              category.type === form.type && !isCorrectionCategory(category)
+          ),
     [categories, form.type]
   );
+
+  const budgetCapsByCategory = useMemo(() => {
+    const map = new Map<string, number | null>();
+    const matches = categoryBudgets.filter(
+      (budget) => budget.period_key === activeMonthKey
+    );
+    const scoped = matches.length > 0
+      ? matches
+      : categoryBudgets.filter((budget) => !budget.period_key);
+    scoped.forEach((budget) => {
+      map.set(budget.category_id, budget.cap_amount ?? null);
+    });
+    return map;
+  }, [categoryBudgets, activeMonthKey]);
+
+  const accountBalances = useMemo(
+    () => buildAccountBalances(accounts, transactions),
+    [accounts, transactions]
+  );
+
+  const filteredTransactions = useMemo(
+    () => filterBalanceCorrectionTransactions(transactions, categories),
+    [transactions, categories]
+  );
+
+  const expenseSpendByCategory = useMemo(() => {
+    const spend = new Map<string, number>();
+    categories.forEach((category) => {
+      spend.set(category.id, 0);
+    });
+    filteredTransactions.forEach((transaction) => {
+      if (transaction.type !== "expense") return;
+      if (!transaction.date.startsWith(activeMonthKey)) return;
+      if (editing && transaction.id === editing.id) return;
+      const category = categoryById.get(transaction.category_id);
+      if (!category) return;
+      let cursor: Category | undefined = category;
+      while (cursor) {
+        spend.set(cursor.id, (spend.get(cursor.id) ?? 0) + transaction.amount);
+        cursor = cursor.parent_id ? categoryById.get(cursor.parent_id) : undefined;
+      }
+    });
+    return spend;
+  }, [filteredTransactions, categories, categoryById, activeMonthKey, editing]);
 
   const categoryOptions = useMemo<CategoryWithChildren[]>(() => {
     const parents = filteredCategories.filter((category) => !category.parent_id);
@@ -130,6 +172,66 @@ const Transactions = () => {
       .filter((item): item is CategoryWithChildren => item !== null);
   }, [categoryOptions, categorySearch]);
 
+  const selectedCategory = useMemo(
+    () => categories.find((category) => category.id === form.category_id),
+    [categories, form.category_id]
+  );
+
+  const categoryBudget = useMemo(() => {
+    if (!selectedCategory) return null;
+    const directCap = budgetCapsByCategory.get(selectedCategory.id) ?? null;
+    const parentCap = selectedCategory.parent_id
+      ? budgetCapsByCategory.get(selectedCategory.parent_id) ?? null
+      : null;
+    if (directCap !== null && parentCap !== null) {
+      return Math.min(directCap, parentCap);
+    }
+    return directCap ?? parentCap;
+  }, [budgetCapsByCategory, selectedCategory]);
+
+  const budgetStatus = useMemo(() => {
+    if (!selectedCategory || form.type !== "expense") return null;
+    if (categoryBudget === null || categoryBudget <= 0) return null;
+    const currentSpent = expenseSpendByCategory.get(selectedCategory.id) ?? 0;
+    const pendingAmount = Number(form.amount) || 0;
+    const projected = currentSpent + Math.max(pendingAmount, 0);
+    const ratio = projected / categoryBudget;
+    if (ratio >= 1) return "over";
+    if (ratio >= 0.8) return "warn";
+    return "ok";
+  }, [selectedCategory, form.type, categoryBudget, expenseSpendByCategory, form.amount]);
+
+  const budgetInfo = useMemo(() => {
+    if (!selectedCategory || form.type !== "expense") return null;
+    const currentSpent = expenseSpendByCategory.get(selectedCategory.id) ?? 0;
+    const pendingAmount = Number(form.amount) || 0;
+    const projected = currentSpent + Math.max(pendingAmount, 0);
+    if (categoryBudget === null || categoryBudget <= 0) {
+      return {
+        cap: null,
+        projected,
+        currentSpent,
+        remaining: null,
+        percentSpent: null,
+        overAmount: null,
+        overPercent: null
+      };
+    }
+    const remaining = categoryBudget - projected;
+    const percentSpent = projected / categoryBudget;
+    const overAmount = remaining < 0 ? Math.abs(remaining) : 0;
+    const overPercent = overAmount > 0 ? overAmount / categoryBudget : 0;
+    return {
+      cap: categoryBudget,
+      projected,
+      currentSpent,
+      remaining,
+      percentSpent,
+      overAmount,
+      overPercent
+    };
+  }, [selectedCategory, form.type, categoryBudget, expenseSpendByCategory, form.amount]);
+
   const recentTransactions = useMemo(() => {
     const sorted = [...transactions].sort((a, b) => {
       const dateCompare = b.date.localeCompare(a.date);
@@ -141,7 +243,7 @@ const Transactions = () => {
 
   const summary = useMemo(() => {
     const limit = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    return transactions.reduce(
+    return filteredTransactions.reduce(
       (acc, item) => {
         if (new Date(item.date).getTime() < limit) return acc;
         if (item.type === "income") {
@@ -156,7 +258,7 @@ const Transactions = () => {
       },
       { income: 0, expense: 0, investmentIn: 0, investmentOut: 0 }
     );
-  }, [transactions]);
+  }, [filteredTransactions]);
 
   const netFlow =
     summary.income -
@@ -235,9 +337,38 @@ const Transactions = () => {
       }
     }
     const amountValue = Number(form.amount);
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      setMessage("Inserisci un importo valido.");
+      return;
+    }
+
+    const resolveAvailableBalance = (accountId: string) => {
+      const balance =
+        accountBalances.find((item) => item.id === accountId)?.balance ?? 0;
+      if (editing && editing.account_id === accountId) {
+        const delta = editing.flow === "in" ? editing.amount : -editing.amount;
+        return balance - delta;
+      }
+      return balance;
+    };
+
+    const ensureSufficientFunds = (accountId: string) => {
+      const available = resolveAvailableBalance(accountId);
+      if (amountValue > available) {
+        setMessage(
+          `Saldo insufficiente. Disponibile: ${formatCurrencySafe(
+            available,
+            form.currency as Currency
+          )}`
+        );
+        return false;
+      }
+      return true;
+    };
 
     try {
       if (form.type === "transfer") {
+        if (!ensureSufficientFunds(form.transfer_from_id)) return;
         const fromAccount = accounts.find((item) => item.id === form.transfer_from_id);
         const toAccount = accounts.find((item) => item.id === form.transfer_to_id);
         const note = form.note
@@ -268,14 +399,14 @@ const Transactions = () => {
           }
         ]);
       } else {
+        const flowDirection =
+          form.type === "income" ? "in" : form.type === "expense" ? "out" : form.flow;
+        if (flowDirection === "out" && !ensureSufficientFunds(form.account_id)) {
+          return;
+        }
         const payload = {
           type: form.type,
-          flow:
-            form.type === "income"
-              ? "in"
-              : form.type === "expense"
-                ? "out"
-                : form.flow,
+          flow: flowDirection,
           account_id: form.account_id,
           category_id: form.category_id,
           amount: amountValue,
@@ -297,9 +428,6 @@ const Transactions = () => {
     }
   };
 
-  const selectedCategory = form.category_id
-    ? categories.find((category) => category.id === form.category_id)
-    : null;
   const selectedLabel = selectedCategory?.name ?? "Seleziona categoria";
   const selectedIcon = selectedCategory
     ? categoryIcons.get(selectedCategory.id) ?? "\u{1F4CC}"
@@ -476,19 +604,87 @@ const Transactions = () => {
             </>
           )}
           {!isTransfer && (
-            <div className="category-picker form-span">
-              <button
-                className="picker-trigger"
-                type="button"
-                onClick={() => setCategoryOpen(true)}
-                aria-expanded={categoryOpen}
-              >
-                <span className="picker-label">
-                  <span className="picker-icon">{selectedIcon}</span>
-                  {selectedLabel}
-                </span>
-                <span className="picker-caret">v</span>
-              </button>
+            <div
+              className={`category-budget-row form-span${
+                form.type !== "expense" ? " single" : ""
+              }`}
+            >
+              <div className="category-picker">
+                <button
+                  className="picker-trigger"
+                  type="button"
+                  onClick={() => setCategoryOpen(true)}
+                  aria-expanded={categoryOpen}
+                >
+                  <span className="picker-label">
+                    <span className="picker-icon">{selectedIcon}</span>
+                    {selectedLabel}
+                  </span>
+                  <span className="picker-caret">v</span>
+                </button>
+              </div>
+              {form.type === "expense" && (
+                <div className={`budget-indicator ${budgetStatus ?? "idle"}`}>
+                  {!selectedCategory && (
+                    <div className="budget-indicator-empty">
+                      <strong>Seleziona una categoria</strong>
+                      <span className="section-subtitle">
+                        Vedrai il CAP appena scegli la categoria.
+                      </span>
+                    </div>
+                  )}
+                  {selectedCategory && budgetInfo?.cap === null && (
+                    <div className="budget-indicator-empty">
+                      <strong>Nessun CAP impostato</strong>
+                      <span className="section-subtitle">
+                        Imposta un CAP nella sezione Budget.
+                      </span>
+                    </div>
+                  )}
+                    {selectedCategory && budgetInfo?.cap !== null && budgetInfo && (
+                      <>
+                        <div className="budget-indicator-block">
+                          <span className="budget-indicator-label">Speso / CAP</span>
+                          <strong>
+                          {formatCurrencySafe(budgetInfo.projected, currency)} /{" "}
+                          {formatCurrencySafe(budgetInfo.cap, currency)}
+                        </strong>
+                        <span className="budget-indicator-sub">
+                          {budgetInfo.overAmount && budgetInfo.overAmount > 0
+                            ? `Superamento: ${formatCurrencySafe(
+                                budgetInfo.overAmount,
+                                currency
+                              )} (${formatPercent(budgetInfo.overPercent ?? 0)})`
+                            : `Residuo: ${formatCurrencySafe(
+                                budgetInfo.remaining ?? 0,
+                                currency
+                              )}`}
+                        </span>
+                      </div>
+                        <div className="budget-indicator-block">
+                          <span className="budget-indicator-label">Totale speso</span>
+                          <strong>{formatCurrencySafe(budgetInfo.projected, currency)}</strong>
+                          <span className="budget-indicator-sub">
+                            {budgetInfo.percentSpent !== null
+                              ? `${formatPercent(budgetInfo.percentSpent)} del CAP`
+                              : "N/D"}
+                          </span>
+                        </div>
+                        <div className="budget-indicator-bar">
+                          <span
+                            className="budget-indicator-fill"
+                            style={{
+                              width: `${Math.min(
+                                (budgetInfo.percentSpent ?? 0) * 100,
+                                100
+                              )}%`
+                            }}
+                          />
+                        </div>
+                      </>
+                    )}
+                </div>
+              )}
             </div>
           )}
           {isTransfer && (

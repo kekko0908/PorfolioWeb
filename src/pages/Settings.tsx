@@ -4,6 +4,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { usePortfolioData } from "../hooks/usePortfolioData";
 import {
   createAccount,
+  createTransaction,
   createHoldings,
   createTransactions,
   deleteAccount,
@@ -17,6 +18,7 @@ import {
   resolveAvatarRefUrl,
   uploadAvatarFile
 } from "../lib/avatar";
+import { buildAccountBalances } from "../lib/metrics";
 import { supabase } from "../lib/supabaseClient";
 import type {
   Account,
@@ -75,6 +77,7 @@ const defaultDicebearSeeds = [
   "Sole"
 ];
 const maxAvatarEntries = 12;
+const correctionCategoryName = "Correzione Saldo";
 
 type ProfilePayload = {
   display_name?: string | null;
@@ -92,6 +95,9 @@ const Settings = () => {
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [accountForm, setAccountForm] = useState(emptyAccountForm);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [editingBalanceOriginal, setEditingBalanceOriginal] = useState<number | null>(
+    null
+  );
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
@@ -113,6 +119,11 @@ const Settings = () => {
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
 
+  const accountBalances = useMemo(
+    () => buildAccountBalances(accounts, transactions),
+    [accounts, transactions]
+  );
+
   const isSystemAccount = (account: Account) =>
     /emergenza|emergency/i.test(account.name);
 
@@ -121,6 +132,22 @@ const Settings = () => {
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "")
       .trim();
+
+  const getCorrectionCategoryId = async (type: "income" | "expense") => {
+    const targetKey = normalizeKey(correctionCategoryName);
+    const existing = categories.find(
+      (item) => item.type === type && normalizeKey(item.name) === targetKey
+    );
+    if (existing) return existing.id;
+
+    const { data, error } = await supabase
+      .from("categories")
+      .insert({ name: correctionCategoryName, type })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id as string;
+  };
 
   const categoryNameToId = useMemo(
     () => new Map(categories.map((item) => [normalizeKey(item.name), item.id])),
@@ -520,23 +547,59 @@ const Settings = () => {
   const resetAccountForm = () => {
     setAccountForm({ ...emptyAccountForm, currency: baseCurrency });
     setEditingAccount(null);
+    setEditingBalanceOriginal(null);
   };
 
   const handleAccountSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setAccountMessage(null);
     const isEditingSystem = editingAccount ? isSystemAccount(editingAccount) : false;
+    const openingBalanceInput = accountForm.opening_balance.trim();
+    const openingBalanceParsed = Number(openingBalanceInput);
+    const hasOpeningBalance = openingBalanceInput !== "" && Number.isFinite(openingBalanceParsed);
+    const roundedInput = Number.isFinite(openingBalanceParsed)
+      ? Number(openingBalanceParsed.toFixed(2))
+      : null;
+    const hasBalanceChange =
+      editingAccount &&
+      editingBalanceOriginal !== null &&
+      roundedInput !== null &&
+      roundedInput !== Number(editingBalanceOriginal.toFixed(2));
     const payload = {
       name: isEditingSystem ? editingAccount?.name ?? "" : accountForm.name.trim(),
       type: accountForm.type,
       emoji: accountForm.emoji.trim() || null,
       currency: accountForm.currency as "EUR" | "USD",
-      opening_balance: Number(accountForm.opening_balance || 0)
+      opening_balance: editingAccount
+        ? editingAccount.opening_balance
+        : Number(accountForm.opening_balance || 0)
     };
 
     try {
       if (editingAccount) {
+        let correctionDiff = 0;
+        if (hasOpeningBalance && hasBalanceChange) {
+          const currentBalance =
+            accountBalances.find((item) => item.id === editingAccount.id)?.balance ?? 0;
+          correctionDiff = Number((openingBalanceParsed - currentBalance).toFixed(2));
+        }
         await updateAccount(editingAccount.id, payload);
+        if (correctionDiff !== 0) {
+          const isPositive = correctionDiff > 0;
+          const categoryId = await getCorrectionCategoryId(
+            isPositive ? "income" : "expense"
+          );
+          await createTransaction({
+            account_id: editingAccount.id,
+            category_id: categoryId,
+            type: isPositive ? "income" : "expense",
+            flow: isPositive ? "in" : "out",
+            amount: Math.abs(correctionDiff),
+            currency: accountForm.currency as "EUR" | "USD",
+            date: new Date().toISOString().slice(0, 10),
+            note: correctionCategoryName
+          });
+        }
       } else {
         await createAccount(payload);
       }
@@ -550,6 +613,7 @@ const Settings = () => {
 
   const startAccountEdit = (account: Account) => {
     setEditingAccount(account);
+    setEditingBalanceOriginal(account.opening_balance ?? 0);
     setAccountForm({
       name: account.name,
       type: account.type,

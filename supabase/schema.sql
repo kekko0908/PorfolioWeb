@@ -100,6 +100,19 @@ create table if not exists public.allocation_targets (
   unique (user_id, key)
 );
 
+-- Category budgets (caps)
+create table if not exists public.category_budgets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  category_id uuid not null references public.categories on delete cascade,
+  cap_amount numeric(14, 2),
+  color text,
+  period_key text not null default to_char(now(), 'YYYY-MM'),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, category_id, period_key)
+);
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -116,6 +129,12 @@ before update on public.settings
 for each row
 execute procedure public.set_updated_at();
 
+drop trigger if exists category_budgets_updated_at on public.category_budgets;
+create trigger category_budgets_updated_at
+before update on public.category_budgets
+for each row
+execute procedure public.set_updated_at();
+
 -- RLS
 alter table public.categories enable row level security;
 alter table public.accounts enable row level security;
@@ -124,6 +143,7 @@ alter table public.holdings enable row level security;
 alter table public.goals enable row level security;
 alter table public.settings enable row level security;
 alter table public.allocation_targets enable row level security;
+alter table public.category_budgets enable row level security;
 
 create policy "Categories select" on public.categories
   for select using (auth.uid() = user_id);
@@ -186,6 +206,15 @@ create policy "Settings insert" on public.settings
 create policy "Settings update" on public.settings
   for update using (auth.uid() = user_id);
 create policy "Settings delete" on public.settings
+  for delete using (auth.uid() = user_id);
+
+create policy "Category budgets select" on public.category_budgets
+  for select using (auth.uid() = user_id);
+create policy "Category budgets insert" on public.category_budgets
+  for insert with check (auth.uid() = user_id);
+create policy "Category budgets update" on public.category_budgets
+  for update using (auth.uid() = user_id);
+create policy "Category budgets delete" on public.category_budgets
   for delete using (auth.uid() = user_id);
 
 -- Seed default categories per user
