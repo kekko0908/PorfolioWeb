@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { DonutChart } from "../components/charts/DonutChart";
 import { buildCategoryIcons } from "../lib/categoryIcons";
 import { formatCurrencySafe, formatPercent } from "../lib/format";
@@ -80,6 +80,7 @@ const Budget = () => {
   );
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear());
+  const lastAutoCopiedMonth = useRef<string | null>(null);
 
   const currency = settings?.base_currency ?? "EUR";
   const monthKey = activeMonth;
@@ -110,6 +111,11 @@ const Budget = () => {
         (category) => category.type === "expense" && !isCorrectionCategory(category)
       ),
     [categories]
+  );
+
+  const expenseCategoryIds = useMemo(
+    () => new Set(expenseCategories.map((category) => category.id)),
+    [expenseCategories]
   );
 
   const categoryById = useMemo(
@@ -246,6 +252,19 @@ const Budget = () => {
     return map;
   }, [parentCategories, colorDrafts, colorById, defaultColorById, categoryIcons]);
 
+  const getPreviousMonthKey = (value: string) => {
+    const parts = value.split("-");
+    if (parts.length !== 2) return value;
+    const year = Number(parts[0]);
+    const month = Number(parts[1]) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return value;
+    const prevDate = new Date(year, month - 1, 1);
+    return `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}`;
+  };
+
   const totalExpense = useMemo(() => {
     return parentCategories.reduce(
       (sum, category) => sum + (spendMaps.spendTotal.get(category.id) ?? 0),
@@ -330,6 +349,41 @@ const Budget = () => {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!session?.user) return;
+    if (!monthKey) return;
+    if (lastAutoCopiedMonth.current === monthKey) return;
+    const hasCurrent = categoryBudgets.some(
+      (budget) => budget.period_key === monthKey
+    );
+    if (hasCurrent) return;
+    const previousKey = getPreviousMonthKey(monthKey);
+    const previousBudgets = categoryBudgets.filter(
+      (budget) => budget.period_key === previousKey
+    );
+    if (previousBudgets.length === 0) return;
+    const payloads = previousBudgets
+      .filter((budget) => expenseCategoryIds.has(budget.category_id))
+      .map((budget) => ({
+        user_id: session.user.id,
+        category_id: budget.category_id,
+        cap_amount: budget.cap_amount ?? null,
+        color: budget.color ?? null,
+        period_key: monthKey
+      }));
+    if (payloads.length === 0) return;
+    lastAutoCopiedMonth.current = monthKey;
+    const syncCopy = async () => {
+      try {
+        await upsertCategoryBudgets(payloads);
+        await refresh();
+      } catch {
+        lastAutoCopiedMonth.current = null;
+      }
+    };
+    void syncCopy();
+  }, [categoryBudgets, expenseCategoryIds, monthKey, refresh, session?.user]);
 
   const shiftMonth = (delta: number) => {
     const nextDate = new Date(monthYear, monthIndex + delta, 1);
