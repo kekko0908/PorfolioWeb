@@ -107,11 +107,15 @@ export const defaultCategories: CategorySeed[] = [
   },
   {
     type: "expense",
+    name: "Regali",
+    children: ["Regali fatti ad altri"]
+  },
+  {
+    type: "expense",
     name: "Famiglia & Altro",
     children: [
       "Spese per Figli (Scuola, Sport)",
       "Animali Domestici (Cibo, Vet)",
-      "Regali fatti ad altri",
       "Beneficenza"
     ]
   },

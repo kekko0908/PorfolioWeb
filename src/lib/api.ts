@@ -132,6 +132,18 @@ export const createTransaction = async (
   handleError(error);
 };
 
+export const createTransactionWithId = async (
+  payload: Omit<Transaction, "id" | "created_at" | "user_id">
+): Promise<{ id: string }> => {
+  const { data, error } = await supabase
+    .from("transactions")
+    .insert(payload)
+    .select("id")
+    .single();
+  handleError(error);
+  return data as { id: string };
+};
+
 export const createTransactions = async (
   payloads: Omit<Transaction, "id" | "created_at" | "user_id">[]
 ): Promise<void> => {
@@ -182,17 +194,32 @@ export const fetchHoldings = async (): Promise<Holding[]> => {
   const { data, error } = await supabase
     .from("holdings")
     .select("*")
+    .order("sort_order", { ascending: true, nullsFirst: false })
     .order("created_at", { ascending: false });
   handleError(error);
   return (data ?? []).map((item) => ({
     ...item,
     emoji: item.emoji ?? null,
     target_pct: item.target_pct ?? null,
+    sort_order: item.sort_order ?? null,
     quantity: toNumber(item.quantity),
     avg_cost: toNumber(item.avg_cost),
     total_cap: toNumber(item.total_cap),
     current_value: toNumber(item.current_value)
   })) as Holding[];
+};
+
+export const updateHoldingsOrder = async (
+  payloads: { id: string; sort_order: number | null }[]
+): Promise<void> => {
+  if (payloads.length === 0) return;
+  for (const payload of payloads) {
+    const { error } = await supabase
+      .from("holdings")
+      .update({ sort_order: payload.sort_order })
+      .eq("id", payload.id);
+    handleError(error);
+  }
 };
 
 export const createHolding = async (

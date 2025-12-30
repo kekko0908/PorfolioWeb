@@ -47,6 +47,7 @@ create table if not exists public.refunds (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users on delete cascade default auth.uid(),
   transaction_id uuid not null references public.transactions on delete cascade,
+  refund_transaction_id uuid references public.transactions on delete cascade,
   account_id uuid not null references public.accounts on delete restrict,
   refund_amount numeric(14, 2) not null,
   currency text not null check (currency in ('EUR', 'USD')),
@@ -55,6 +56,9 @@ create table if not exists public.refunds (
   photo_path text,
   created_at timestamptz not null default now()
 );
+
+alter table public.refunds
+  add column if not exists refund_transaction_id uuid references public.transactions on delete cascade;
 -- Holdings
 create table if not exists public.holdings (
   id uuid primary key default gen_random_uuid(),
@@ -70,8 +74,12 @@ create table if not exists public.holdings (
   currency text not null check (currency in ('EUR', 'USD')),
   start_date date not null,
   note text,
+  sort_order integer,
   created_at timestamptz not null default now()
 );
+
+alter table public.holdings
+  add column if not exists sort_order integer;
 
 -- Goals
 create table if not exists public.goals (
@@ -352,12 +360,17 @@ begin
     (v_user_id, 'Interessi passivi su prestiti', 'expense', parent_id, true);
 
   insert into public.categories (user_id, name, type) values
+    (v_user_id, 'Regali', 'expense')
+    returning id into parent_id;
+  insert into public.categories (user_id, name, type, parent_id) values
+    (v_user_id, 'Regali fatti ad altri', 'expense', parent_id);
+
+  insert into public.categories (user_id, name, type) values
     (v_user_id, 'Famiglia & Altro', 'expense')
     returning id into parent_id;
   insert into public.categories (user_id, name, type, parent_id) values
     (v_user_id, 'Spese per Figli (Scuola, Sport)', 'expense', parent_id),
     (v_user_id, 'Animali Domestici (Cibo, Vet)', 'expense', parent_id),
-    (v_user_id, 'Regali fatti ad altri', 'expense', parent_id),
     (v_user_id, 'Beneficenza', 'expense', parent_id);
 
   insert into public.categories (user_id, name, type) values

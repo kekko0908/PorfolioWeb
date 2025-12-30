@@ -5,8 +5,10 @@ import { usePortfolioData } from "../hooks/usePortfolioData";
 import { useAuth } from "../contexts/AuthContext";
 import {
   createTransaction,
+  createTransactionWithId,
   createTransactions,
   createRefund,
+  deleteTransaction,
   seedDefaultCategories,
   updateTransaction
 } from "../lib/api";
@@ -425,27 +427,41 @@ const Transactions = () => {
       const refundNote =
         refundForm.note.trim() || `Rimborso: ${originalCategory}`;
 
-      await createRefund({
-        transaction_id: refundTarget.id,
-        account_id: refundForm.account_id,
-        refund_amount: amountValue,
-        currency: refundCurrency as Currency,
-        date: refundForm.date,
-        note: refundForm.note.trim() || null,
-        photo_path: photoPath
-      });
+      let refundTransactionId: string | null = null;
+      try {
+        const created = await createTransactionWithId({
+          type: "income",
+          flow: "in",
+          account_id: refundForm.account_id,
+          category_id: categoryId,
+          amount: amountValue,
+          currency: refundCurrency as "EUR" | "USD",
+          date: refundForm.date,
+          note: refundNote,
+          tags: refundTarget.tags ?? null
+        });
+        refundTransactionId = created.id;
 
-      await createTransaction({
-        type: "income",
-        flow: "in",
-        account_id: refundForm.account_id,
-        category_id: categoryId,
-        amount: amountValue,
-        currency: refundCurrency as "EUR" | "USD",
-        date: refundForm.date,
-        note: refundNote,
-        tags: refundTarget.tags ?? null
-      });
+        await createRefund({
+          transaction_id: refundTarget.id,
+          refund_transaction_id: refundTransactionId,
+          account_id: refundForm.account_id,
+          refund_amount: amountValue,
+          currency: refundCurrency as Currency,
+          date: refundForm.date,
+          note: refundForm.note.trim() || null,
+          photo_path: photoPath
+        });
+      } catch (err) {
+        if (refundTransactionId) {
+          try {
+            await deleteTransaction(refundTransactionId);
+          } catch (cleanupError) {
+            console.error("Impossibile annullare il rimborso creato.", cleanupError);
+          }
+        }
+        throw err;
+      }
 
       await refresh();
       setMessage("Rimborso registrato.");
@@ -1217,7 +1233,7 @@ const Transactions = () => {
                         )}
                       </span>
                     )}
-                    {item.type === "expense" && !isCorrection && (
+                    {item.type === "expense" && !isCorrection && !refundInfo && (
                       <button
                         className="button ghost small"
                         type="button"

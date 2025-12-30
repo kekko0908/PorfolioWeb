@@ -1494,6 +1494,96 @@ label {
   grid-column: 1 / -1;
 }
 
+.category-block {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.category-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.category-parent {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.category-parent:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.category-parent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.category-subtitle {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.category-caret {
+  font-size: 14px;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+}
+
+.category-caret.open {
+  transform: rotate(90deg);
+}
+
+.category-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.category-children {
+  display: grid;
+  gap: 8px;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.category-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.category-child-name {
+  font-size: 14px;
+}
+
+.category-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
 .budget-overview {
   display: grid;
   grid-template-columns: minmax(280px, 360px) 1fr;
@@ -2139,6 +2229,22 @@ label {
   color: var(--ink);
 }
 
+.select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, rgba(229, 231, 235, 0.8) 50%),
+    linear-gradient(135deg, rgba(229, 231, 235, 0.8) 50%, transparent 50%),
+    linear-gradient(to right, rgba(15, 20, 30, 0.6), rgba(15, 20, 30, 0.6));
+  background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%, 0 0;
+  background-size: 6px 6px, 6px 6px, 100% 100%;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+}
+
+.select option {
+  background: #0f1720;
+  color: var(--ink);
+}
+
 .input::placeholder,
 .textarea::placeholder {
   color: rgba(154, 164, 178, 0.8);
@@ -2372,6 +2478,33 @@ label {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.asset-group-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drag-handle {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-handle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .asset-group-metrics {
@@ -2759,6 +2892,16 @@ label {
 }
 
 @media (max-width: 720px) {
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .card,
+  .chart-card {
+    padding: 16px;
+  }
+
   .sidebar {
     flex-direction: column;
     align-items: flex-start;
@@ -2796,6 +2939,14 @@ label {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-avatar {
+    justify-items: flex-start;
   }
 
   .calendar-header {
@@ -2846,6 +2997,14 @@ label {
   .asset-group-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .asset-group-title {
+    width: 100%;
+  }
+
+  .drag-handle {
+    align-self: flex-start;
   }
 
   .asset-item {
@@ -2899,8 +3058,21 @@ label {
     grid-template-columns: 1fr;
   }
 
+  .category-picker {
+    max-width: 100%;
+  }
+
   .budget-overview {
     grid-template-columns: 1fr;
+  }
+
+  .budget-month-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .budget-month-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .budget-cap-row {
@@ -2943,6 +3115,16 @@ label {
   }
 
   .goal-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .category-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .category-actions {
     width: 100%;
     justify-content: flex-start;
   }

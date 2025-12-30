@@ -32,6 +32,7 @@ const Categories = () => {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Category | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [openParents, setOpenParents] = useState<Set<string>>(() => new Set());
 
   const visibleCategories = useMemo(
     () => categories.filter((category) => !isCorrectionCategory(category)),
@@ -61,6 +62,18 @@ const Categories = () => {
   const resetForm = () => {
     setForm(emptyForm);
     setEditing(null);
+  };
+
+  const toggleParent = (id: string) => {
+    setOpenParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -228,52 +241,91 @@ const Categories = () => {
             ) : (
               grouped[type]
                 .filter((category) => !category.parent_id)
-                .map((parent) => (
-                  <div key={parent.id} style={{ marginBottom: "12px" }}>
-                    <strong>{parent.name}</strong>
-                    <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
-                      <button
-                        className="button ghost"
-                        type="button"
-                        onClick={() => startEdit(parent)}
-                      >
-                        Modifica
-                      </button>
-                      <button
-                        className="button ghost"
-                        type="button"
-                        onClick={() => removeItem(parent.id)}
-                      >
-                        Elimina
-                      </button>
-                    </div>
-                    <div style={{ marginTop: "8px", paddingLeft: "12px" }}>
-                      {grouped[type]
-                        .filter((child) => child.parent_id === parent.id)
-                        .map((child) => (
-                          <div key={child.id} style={{ marginBottom: "6px" }}>
-                            <span>{child.name}</span>
-                            <div style={{ display: "flex", gap: "6px", marginTop: "4px" }}>
-                              <button
-                                className="button ghost"
-                                type="button"
-                                onClick={() => startEdit(child)}
-                              >
-                                Modifica
-                              </button>
-                              <button
-                                className="button ghost"
-                                type="button"
-                                onClick={() => removeItem(child.id)}
-                              >
-                                Elimina
-                              </button>
-                            </div>
+                .map((parent) => {
+                  const children = grouped[type].filter(
+                    (child) => child.parent_id === parent.id
+                  );
+                  const isOpen = openParents.has(parent.id);
+                  return (
+                    <div className="category-block" key={parent.id}>
+                      <div className="category-row">
+                        <button
+                          className="category-parent"
+                          type="button"
+                          onClick={() => toggleParent(parent.id)}
+                          aria-expanded={isOpen}
+                          aria-controls={`category-children-${parent.id}`}
+                        >
+                          <div className="category-parent-text">
+                            <strong>{parent.name}</strong>
+                            <span className="category-subtitle">
+                              {children.length > 0
+                                ? isOpen
+                                  ? "Nascondi sottocategorie"
+                                  : "Mostra sottocategorie"
+                                : "Nessuna sottocategoria"}
+                            </span>
                           </div>
-                        ))}
+                          <span className={`category-caret ${isOpen ? "open" : ""}`}>
+                            {">"}
+                          </span>
+                        </button>
+                        <div className="category-actions">
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() => startEdit(parent)}
+                          >
+                            Modifica
+                          </button>
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() => removeItem(parent.id)}
+                          >
+                            Elimina
+                          </button>
+                        </div>
+                      </div>
+                      {isOpen && (
+                        <div
+                          className="category-children"
+                          id={`category-children-${parent.id}`}
+                        >
+                          {children.length === 0 ? (
+                            <div className="category-empty">
+                              Nessuna sottocategoria.
+                            </div>
+                          ) : (
+                            children.map((child) => (
+                              <div className="category-child" key={child.id}>
+                                <span className="category-child-name">
+                                  {child.name}
+                                </span>
+                                <div className="category-actions">
+                                  <button
+                                    className="button ghost small"
+                                    type="button"
+                                    onClick={() => startEdit(child)}
+                                  >
+                                    Modifica
+                                  </button>
+                                  <button
+                                    className="button ghost small"
+                                    type="button"
+                                    onClick={() => removeItem(child.id)}
+                                  >
+                                    Elimina
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))
+                  );
+                })
             )}
           </div>
         ))}

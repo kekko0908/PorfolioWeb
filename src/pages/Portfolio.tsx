@@ -8,6 +8,7 @@ import {
   fetchAllocationTargets,
   replaceAllocationTargets,
   updateHolding,
+  updateHoldingsOrder,
   upsertSettings
 } from "../lib/api";
 import { DonutChart } from "../components/charts/DonutChart";
@@ -109,6 +110,9 @@ const Portfolio = () => {
   });
   const [tradeMessage, setTradeMessage] = useState<string | null>(null);
   const [tradeLoading, setTradeLoading] = useState(false);
+  const [groupOrder, setGroupOrder] = useState<string[]>([]);
+  const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
+  const [ordering, setOrdering] = useState(false);
   const [allocationTargetsLoaded, setAllocationTargetsLoaded] = useState(false);
   const [emergencyFundMonths, setEmergencyFundMonths] = useState(6);
   const [allocationTargetItems, setAllocationTargetItems] = useState<
@@ -502,6 +506,11 @@ const Portfolio = () => {
     return quantity * avgCost;
   }, [form.quantity, form.avg_cost, form.current_value, isCash]);
 
+  const maxSortOrder = useMemo(
+    () => holdings.reduce((max, item) => Math.max(max, item.sort_order ?? 0), 0),
+    [holdings]
+  );
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage(null);
@@ -511,7 +520,7 @@ const Portfolio = () => {
     const quantity = isCash ? 1 : Number(form.quantity);
     const avgCost = isCash ? currentValue : Number(form.avg_cost);
     const ticker = extractTicker(form.name);
-    const payload = {
+    const basePayload = {
       name: form.name,
       asset_class: form.asset_class,
       emoji: form.emoji.trim() || null,
@@ -527,7 +536,10 @@ const Portfolio = () => {
 
     try {
       if (editing) {
-        await updateHolding(editing.id, payload);
+        await updateHolding(editing.id, {
+          ...basePayload,
+          sort_order: editing.sort_order ?? null
+        });
       } else {
         const match =
           !isCash && ticker
@@ -538,7 +550,7 @@ const Portfolio = () => {
               )
             : null;
         if (match) {
-          if (match.currency !== payload.currency) {
+          if (match.currency !== basePayload.currency) {
             setMessage(
               "Ticker gia presente con valuta diversa. Aggiorna la holding esistente."
             );
@@ -568,19 +580,23 @@ const Portfolio = () => {
           await updateHolding(match.id, {
             name: match.name,
             asset_class: match.asset_class,
-            emoji: payload.emoji ?? match.emoji,
+            emoji: basePayload.emoji ?? match.emoji,
             target_pct: match.target_pct ?? null,
             quantity: newQuantity,
             avg_cost: newAvgCost,
             total_cap: newTotalCap,
             current_value: newCurrentValue,
-            currency: payload.currency,
+            currency: basePayload.currency,
             start_date: newStartDate,
-            note: payload.note || match.note
+            note: basePayload.note || match.note,
+            sort_order: match.sort_order ?? null
           });
           customMessage = `Holding unita a ${match.name}.`;
         } else {
-          await createHolding(payload);
+          await createHolding({
+            ...basePayload,
+            sort_order: maxSortOrder + 10
+          });
         }
       }
       await refresh();
@@ -878,6 +894,39 @@ const Portfolio = () => {
     }
   };
 
+  const sortedHoldings = useMemo(() => {
+    return [...holdings].sort((a, b) => {
+      const aOrder = a.sort_order ?? Number.MAX_SAFE_INTEGER;
+      const bOrder = b.sort_order ?? Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+  }, [holdings]);
+
+  const defaultGroupOrder = useMemo(() => {
+    const seen = new Set<string>();
+    const order: string[] = [];
+    sortedHoldings.forEach((item) => {
+      const key = item.asset_class || "Altro";
+      if (!seen.has(key)) {
+        seen.add(key);
+        order.push(key);
+      }
+    });
+    return order;
+  }, [sortedHoldings]);
+
+  useEffect(() => {
+    setGroupOrder((prev) => {
+      if (prev.length === 0) return defaultGroupOrder;
+      const next = prev.filter((label) => defaultGroupOrder.includes(label));
+      defaultGroupOrder.forEach((label) => {
+        if (!next.includes(label)) next.push(label);
+      });
+      return next;
+    });
+  }, [defaultGroupOrder]);
+
   const grouped = useMemo(() => {
     const map = new Map<
       string,
@@ -887,7 +936,7 @@ const Portfolio = () => {
         totalValue: number;
       }
     >();
-    holdings.forEach((item) => {
+    sortedHoldings.forEach((item) => {
       const key = item.asset_class || "Altro";
       const current = map.get(key) ?? { items: [], totalCap: 0, totalValue: 0 };
       current.items.push(item);
@@ -895,12 +944,56 @@ const Portfolio = () => {
       current.totalValue += item.current_value;
       map.set(key, current);
     });
-    return Array.from(map.entries()).map(([label, data]) => ({
+    const items = Array.from(map.entries()).map(([label, data]) => ({
       label,
       ...data,
       roi: data.totalCap ? (data.totalValue - data.totalCap) / data.totalCap : 0
     }));
-  }, [holdings]);
+    if (groupOrder.length === 0) return items;
+    const orderIndex = new Map(groupOrder.map((label, index) => [label, index]));
+    return items.sort(
+      (a, b) =>
+        (orderIndex.get(a.label) ?? Number.MAX_SAFE_INTEGER) -
+        (orderIndex.get(b.label) ?? Number.MAX_SAFE_INTEGER)
+    );
+  }, [sortedHoldings, groupOrder]);
+
+  const persistHoldingsOrder = async (nextOrder: string[]) => {
+    if (ordering) return;
+    const ordered = nextOrder.flatMap((label) =>
+      sortedHoldings.filter((item) => (item.asset_class || "Altro") === label)
+    );
+    const known = new Set(ordered.map((item) => item.id));
+    const remaining = sortedHoldings.filter((item) => !known.has(item.id));
+    const finalOrder = [...ordered, ...remaining];
+    const updates = finalOrder.map((item, index) => ({
+      id: item.id,
+      sort_order: (index + 1) * 10
+    }));
+    try {
+      setOrdering(true);
+      await updateHoldingsOrder(updates);
+      await refresh();
+      setMessage("Ordine holdings aggiornato.");
+    } catch (err) {
+      setMessage((err as Error).message);
+    } finally {
+      setOrdering(false);
+    }
+  };
+
+  const handleGroupDrop = async (targetLabel: string) => {
+    if (!draggedGroup || draggedGroup === targetLabel) return;
+    const currentOrder = groupOrder.length > 0 ? [...groupOrder] : defaultGroupOrder;
+    const fromIndex = currentOrder.indexOf(draggedGroup);
+    const toIndex = currentOrder.indexOf(targetLabel);
+    if (fromIndex === -1 || toIndex === -1) return;
+    currentOrder.splice(fromIndex, 1);
+    currentOrder.splice(toIndex, 0, draggedGroup);
+    setGroupOrder(currentOrder);
+    await persistHoldingsOrder(currentOrder);
+    setDraggedGroup(null);
+  };
 
   const accountBalances = useMemo(
     () => buildAccountBalances(accounts, transactions),
@@ -2145,13 +2238,39 @@ const Portfolio = () => {
                 (item) => targetDrafts[item.id] !== undefined
               );
               return (
-                <div className="asset-group card" key={group.label}>
+                <div
+                  className="asset-group card"
+                  key={group.label}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    void handleGroupDrop(group.label);
+                  }}
+                >
                   <div className="asset-group-header">
-                    <div>
-                      <h4>{group.label}</h4>
-                      <span className="section-subtitle">
-                        {group.items.length} holdings attive
-                      </span>
+                    <div className="asset-group-title">
+                      <button
+                        className="drag-handle"
+                        type="button"
+                        draggable={!ordering}
+                        onDragStart={(event) => {
+                          setDraggedGroup(group.label);
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", group.label);
+                        }}
+                        onDragEnd={() => setDraggedGroup(null)}
+                        aria-label={`Sposta ${group.label}`}
+                        title="Trascina per riordinare"
+                        disabled={ordering}
+                      >
+                        |||
+                      </button>
+                      <div>
+                        <h4>{group.label}</h4>
+                        <span className="section-subtitle">
+                          {group.items.length} holdings attive
+                        </span>
+                      </div>
                     </div>
                     <div className="asset-group-metrics">
                       <div className="asset-metric">

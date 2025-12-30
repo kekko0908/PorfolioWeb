@@ -48,6 +48,7 @@ export interface Holding {
   currency: Currency;
   start_date: string;
   note: string | null;
+  sort_order: number | null;
   created_at: string;
 }
 
@@ -121,6 +122,7 @@ export interface Refund {
   id: string;
   user_id: string;
   transaction_id: string;
+  refund_transaction_id: string | null;
   account_id: string;
   refund_amount: number;
   currency: Currency;

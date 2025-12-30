@@ -103,6 +103,10 @@ const Settings = () => {
   const { session } = useAuth();
   const { accounts, categories, transactions, holdings, settings, refresh, loading, error } =
     usePortfolioData();
+  const maxHoldingSortOrder = useMemo(
+    () => holdings.reduce((max, item) => Math.max(max, item.sort_order ?? 0), 0),
+    [holdings]
+  );
   const [baseCurrency, setBaseCurrency] = useState("EUR");
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [accountForm, setAccountForm] = useState(emptyAccountForm);
@@ -1078,9 +1082,13 @@ const Settings = () => {
       const valid = payloads.filter(
         (item) => item.name && item.start_date && !Number.isNaN(item.total_cap)
       );
-      await createHoldings(valid);
+      const ordered = valid.map((item, index) => ({
+        ...item,
+        sort_order: maxHoldingSortOrder + (index + 1) * 10
+      }));
+      await createHoldings(ordered);
       await refresh();
-      setImportMessage(`Importate ${valid.length} holdings.`);
+      setImportMessage(`Importate ${ordered.length} holdings.`);
     } catch (err) {
       setImportMessage((err as Error).message);
     }
@@ -1633,6 +1641,28 @@ const Settings = () => {
               total_cap, current_value, currency, start_date, note.
             </span>
           </div>
+        </div>
+
+        <div className="info-panel" style={{ marginTop: "12px" }}>
+          <div className="info-item">
+            <strong>Importa dall'app</strong>
+            <span>Carica Budget.csv o Budget.Trasferimento.csv.</span>
+          </div>
+        </div>
+
+        <div style={{ marginTop: "12px" }}>
+          <label>
+            Importa file app (CSV)
+            <input
+              className="input"
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) handleImportTransactions(file);
+              }}
+            />
+          </label>
         </div>
 
         <div className="grid-3" style={{ marginTop: "16px" }}>
