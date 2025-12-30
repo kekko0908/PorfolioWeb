@@ -30,6 +30,7 @@ export interface Transaction {
   currency: Currency;
   date: string;
   note: string | null;
+  tags?: string[] | null;
   created_at: string;
 }
 
@@ -114,4 +115,17 @@ export interface CategoryBudget {
   period_key: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface Refund {
+  id: string;
+  user_id: string;
+  transaction_id: string;
+  account_id: string;
+  refund_amount: number;
+  currency: Currency;
+  date: string;
+  note: string | null;
+  photo_path: string | null;
+  created_at: string;
 }

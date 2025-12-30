@@ -38,9 +38,23 @@ create table if not exists public.transactions (
   currency text not null check (currency in ('EUR', 'USD')),
   date date not null,
   note text,
+  tags text[],
   created_at timestamptz not null default now()
 );
 
+-- Refunds
+create table if not exists public.refunds (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  transaction_id uuid not null references public.transactions on delete cascade,
+  account_id uuid not null references public.accounts on delete restrict,
+  refund_amount numeric(14, 2) not null,
+  currency text not null check (currency in ('EUR', 'USD')),
+  date date not null,
+  note text,
+  photo_path text,
+  created_at timestamptz not null default now()
+);
 -- Holdings
 create table if not exists public.holdings (
   id uuid primary key default gen_random_uuid(),
@@ -139,6 +153,7 @@ execute procedure public.set_updated_at();
 alter table public.categories enable row level security;
 alter table public.accounts enable row level security;
 alter table public.transactions enable row level security;
+alter table public.refunds enable row level security;
 alter table public.holdings enable row level security;
 alter table public.goals enable row level security;
 alter table public.settings enable row level security;
@@ -179,6 +194,15 @@ create policy "Transactions insert" on public.transactions
 create policy "Transactions update" on public.transactions
   for update using (auth.uid() = user_id);
 create policy "Transactions delete" on public.transactions
+  for delete using (auth.uid() = user_id);
+
+create policy "Refunds select" on public.refunds
+  for select using (auth.uid() = user_id);
+create policy "Refunds insert" on public.refunds
+  for insert with check (auth.uid() = user_id);
+create policy "Refunds update" on public.refunds
+  for update using (auth.uid() = user_id);
+create policy "Refunds delete" on public.refunds
   for delete using (auth.uid() = user_id);
 
 create policy "Holdings select" on public.holdings
@@ -406,3 +430,15 @@ create policy "Avatar_profile insert" on storage.objects
   for insert with check (bucket_id = 'Avatar_profile' and auth.uid() = owner);
 create policy "Avatar_profile delete" on storage.objects
   for delete using (bucket_id = 'Avatar_profile' and auth.uid() = owner);
+
+-- Refunds storage
+insert into storage.buckets (id, name, public)
+values ('refunds', 'refunds', false)
+on conflict (id) do nothing;
+
+create policy "refunds select" on storage.objects
+  for select using (bucket_id = 'refunds' and auth.uid() = owner);
+create policy "refunds insert" on storage.objects
+  for insert with check (bucket_id = 'refunds' and auth.uid() = owner);
+create policy "refunds delete" on storage.objects
+  for delete using (bucket_id = 'refunds' and auth.uid() = owner);

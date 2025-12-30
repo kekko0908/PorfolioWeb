@@ -78,6 +78,18 @@ const defaultDicebearSeeds = [
 ];
 const maxAvatarEntries = 12;
 const correctionCategoryName = "Correzione Saldo";
+const refundCategoryName = "Rimborso";
+
+const categoryAliasMap: Record<string, string> = {
+  regali: "Regali in denaro ricevuti",
+  stipendio: "Stipendio Netto",
+  shopping: "Shopping (Vestiti, Scarpe, Accessori)",
+  cibobevande: "Spesa Supermercato",
+  veicoli: "Carburante",
+  salute: "Farmacia & Medicine",
+  cura: "Igiene Personale & Cosmetica",
+  abbonamenti: "Abbonamenti (Streaming, Cloud, App)"
+};
 
 type ProfilePayload = {
   display_name?: string | null;
@@ -780,6 +792,13 @@ const Settings = () => {
   const normalizeHeaders = (headers: string[]) =>
     headers.map((header) => header.trim().toLowerCase());
 
+  const detectDelimiter = (text: string) => {
+    const sample = text.split(/\r?\n/)[0] ?? "";
+    if (sample.includes(";")) return ";";
+    if (sample.includes(",")) return ",";
+    return ";";
+  };
+
   const handleImportTransactions = async (file: File) => {
     setImportMessage(null);
     try {
@@ -789,19 +808,189 @@ const Settings = () => {
       }
       type TransactionInsert = Omit<Transaction, "id" | "created_at" | "user_id">;
       const text = await file.text();
-      const rows = parseCsv(text);
+      const delimiter = detectDelimiter(text);
+      const rows = parseCsv(text, delimiter);
       if (rows.length < 2) {
         setImportMessage("File vuoto o formato non valido.");
         return;
       }
       const headers = normalizeHeaders(rows[0]);
       const defaultAccountId = accounts[0]?.id ?? "";
+      const localAccountMap = new Map(accountNameToId);
+      const localCategoryMap = new Map(categoryNameToId);
+
+      const parseAmount = (raw: string) => {
+        if (!raw) return Number.NaN;
+        const cleaned = raw.replace(/\./g, "").replace(",", ".");
+        const value = Number(cleaned);
+        return Number.isFinite(value) ? value : Number.NaN;
+      };
+
+      const ensureAccountId = async (rawName: string, currency: Currency) => {
+        const cleaned = rawName.trim();
+        if (!cleaned) return defaultAccountId;
+        const existing =
+          resolveApprox(localAccountMap, cleaned) ?? localAccountMap.get(normalizeKey(cleaned));
+        if (existing) return existing;
+        const { data, error } = await supabase
+          .from("accounts")
+          .insert({
+            name: cleaned,
+            type: "other",
+            currency,
+            opening_balance: 0
+          })
+          .select("id")
+          .single();
+        if (error) throw error;
+        localAccountMap.set(normalizeKey(cleaned), data.id);
+        return data.id as string;
+      };
+
+      const mapCategoryName = (rawName: string) => {
+        const key = normalizeKey(rawName);
+        return categoryAliasMap[key] ?? rawName;
+      };
+
+      const ensureCategoryId = async (rawName: string, type: TransactionType) => {
+        const cleaned = mapCategoryName(rawName.trim());
+        if (!cleaned) return "";
+        const existing =
+          resolveApprox(localCategoryMap, cleaned) ??
+          localCategoryMap.get(normalizeKey(cleaned));
+        if (existing) return existing;
+        const payload = {
+          name: cleaned,
+          type: type === "income" ? "income" : "expense",
+          parent_id: null,
+          is_fixed: false,
+          sort_order: null
+        };
+        const { data, error } = await supabase
+          .from("categories")
+          .insert(payload)
+          .select("id")
+          .single();
+        if (error) throw error;
+        localCategoryMap.set(normalizeKey(cleaned), data.id);
+        return data.id as string;
+      };
+
+      const ensureTransferCategoryId = async () => {
+        const match = categories.find((category) =>
+          category.name.toLowerCase().includes("giroconti")
+        );
+        if (match) return match.id;
+        const { data, error } = await supabase
+          .from("categories")
+          .insert({ name: "Giroconti", type: "income" })
+          .select("id")
+          .single();
+        if (error) throw error;
+        return data.id as string;
+      };
+
+      const isTransferFile =
+        headers.includes("da") && headers.includes("a") && headers.includes("prezzo");
+      const isBudgetFile =
+        headers.includes("categoria") &&
+        headers.includes("conto") &&
+        headers.includes("transazione");
+
+      if (isTransferFile) {
+        const transferCategoryId = await ensureTransferCategoryId();
+        const payloads: TransactionInsert[] = [];
+        for (const cells of rows.slice(1)) {
+          const record = headers.reduce<Record<string, string>>((acc, header, index) => {
+            acc[header] = cells[index]?.trim() ?? "";
+            return acc;
+          }, {});
+          const amountValue = parseAmount(record.prezzo ?? "");
+          if (!record.data || Number.isNaN(amountValue)) continue;
+          const currency: Currency = record.valuta === "USD" ? "USD" : "EUR";
+          const fromAccountId = await ensureAccountId(record.da ?? "", currency);
+          const toAccountId = await ensureAccountId(record.a ?? "", currency);
+          payloads.push(
+            {
+              type: "transfer",
+              flow: "out",
+              account_id: fromAccountId,
+              category_id: transferCategoryId,
+              amount: Math.abs(amountValue),
+              currency,
+              date: record.data,
+              note: record.nota || null
+            },
+            {
+              type: "transfer",
+              flow: "in",
+              account_id: toAccountId,
+              category_id: transferCategoryId,
+              amount: Math.abs(amountValue),
+              currency,
+              date: record.data,
+              note: record.nota || null
+            }
+          );
+        }
+        const valid = payloads.filter(
+          (item) => item.date && item.account_id && item.category_id && !Number.isNaN(item.amount)
+        );
+        await createTransactions(valid);
+        await refresh();
+        setImportMessage(`Importati ${valid.length / 2} trasferimenti.`);
+        return;
+      }
+
+      if (isBudgetFile) {
+        const payloads: TransactionInsert[] = [];
+        for (const cells of rows.slice(1)) {
+          const record = headers.reduce<Record<string, string>>((acc, header, index) => {
+            acc[header] = cells[index]?.trim() ?? "";
+            return acc;
+          }, {});
+          const rawType = normalizeKey(record.transazione ?? "");
+          const isRefund = rawType.includes("rimborso");
+          const type: TransactionType = rawType.includes("uscite")
+            ? "expense"
+            : "income";
+          const flow: FlowDirection = type === "income" ? "in" : "out";
+          const currency: Currency = record.valuta === "USD" ? "USD" : "EUR";
+          const amountValue = parseAmount(record.prezzo ?? "");
+          if (!record.data || Number.isNaN(amountValue)) continue;
+          const accountId = await ensureAccountId(record.conto ?? "", currency);
+          const categoryName = isRefund ? refundCategoryName : record.categoria ?? "";
+          const categoryId = await ensureCategoryId(categoryName, type);
+          const tags = [record.sottocategoria, record.tag]
+            .map((value) => value?.trim())
+            .filter((value) => value);
+          payloads.push({
+            date: record.data,
+            type,
+            flow,
+            account_id: accountId,
+            category_id: categoryId,
+            amount: Math.abs(amountValue),
+            currency,
+            note: record.nota || null,
+            tags: tags.length > 0 ? tags : null
+          });
+        }
+        const valid = payloads.filter(
+          (item) => item.date && item.account_id && item.category_id && !Number.isNaN(item.amount)
+        );
+        await createTransactions(valid);
+        await refresh();
+        setImportMessage(`Importate ${valid.length} transazioni.`);
+        return;
+      }
+
       const payloads: TransactionInsert[] = rows.slice(1).map((cells) => {
         const record = headers.reduce<Record<string, string>>((acc, header, index) => {
           acc[header] = cells[index]?.trim() ?? "";
           return acc;
         }, {});
-        const amountRaw = Number(record.amount ?? 0);
+        const amountRaw = parseAmount(record.amount ?? "0");
         const inferredType = Number.isFinite(amountRaw)
           ? amountRaw < 0
             ? "expense"
@@ -823,6 +1012,9 @@ const Settings = () => {
         const categoryId =
           record.category_id || resolveApprox(categoryNameToId, record.category_name);
         const currency: Currency = record.currency === "USD" ? "USD" : "EUR";
+        const tags = [record.tags, record.tag]
+          .map((value) => value?.trim())
+          .filter((value) => value);
         return {
           date: record.date,
           type,
@@ -831,7 +1023,8 @@ const Settings = () => {
           category_id: categoryId ?? "",
           amount: Math.abs(amountRaw),
           currency,
-          note: record.note || null
+          note: record.note || null,
+          tags: tags.length > 0 ? tags : null
         };
       });
       const valid = payloads.filter(

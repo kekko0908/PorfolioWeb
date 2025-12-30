@@ -62,6 +62,7 @@ const TransactionsFilter = () => {
   const [filterStart, setFilterStart] = useState("");
   const [filterEnd, setFilterEnd] = useState("");
   const [filterQuery, setFilterQuery] = useState("");
+  const [filterTag, setFilterTag] = useState("");
   const [calendarView, setCalendarView] = useState<CalendarView>("month");
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -104,6 +105,10 @@ const TransactionsFilter = () => {
 
   const filteredTransactions = useMemo(() => {
     const query = filterQuery.trim().toLowerCase();
+    const tagQuery = filterTag.trim().toLowerCase();
+    const tagTokens = tagQuery
+      ? tagQuery.split(",").map((value) => value.trim()).filter(Boolean)
+      : [];
     return transactions.filter((item) => {
       if (filterType !== "all" && item.type !== filterType) return false;
       if (filterCategory !== "all" && item.category_id !== filterCategory) return false;
@@ -114,6 +119,14 @@ const TransactionsFilter = () => {
         const note = item.note?.toLowerCase() ?? "";
         if (!categoryName.includes(query) && !note.includes(query)) return false;
       }
+      if (tagTokens.length > 0) {
+        const tags = item.tags ?? [];
+        const lowerTags = tags.map((tag) => tag.toLowerCase());
+        const hasTag = tagTokens.some((token) =>
+          lowerTags.some((tag) => tag.includes(token))
+        );
+        if (!hasTag) return false;
+      }
       return true;
     });
   }, [
@@ -123,6 +136,7 @@ const TransactionsFilter = () => {
     filterStart,
     filterEnd,
     filterQuery,
+    filterTag,
     categoryMap
   ]);
 
@@ -282,6 +296,7 @@ const TransactionsFilter = () => {
     setFilterStart("");
     setFilterEnd("");
     setFilterQuery("");
+    setFilterTag("");
   };
 
   const handleEdit = (id: string) => {
@@ -495,6 +510,13 @@ const TransactionsFilter = () => {
                 placeholder="Cerca note o categoria"
                 value={filterQuery}
                 onChange={(event) => setFilterQuery(event.target.value)}
+              />
+              <input
+                className="input"
+                type="search"
+                placeholder="Tag (comma)"
+                value={filterTag}
+                onChange={(event) => setFilterTag(event.target.value)}
               />
               <button className="button ghost small" type="button" onClick={resetFilters}>
                 Reset filtri

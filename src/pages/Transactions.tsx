@@ -2,15 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { FormEvent } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
+import { useAuth } from "../contexts/AuthContext";
 import {
   createTransaction,
   createTransactions,
+  createRefund,
   seedDefaultCategories,
   updateTransaction
 } from "../lib/api";
 import { formatCurrency, formatCurrencySafe, formatDate, formatPercent } from "../lib/format";
 import { buildCategoryIcons } from "../lib/categoryIcons";
-import { buildAccountBalances, filterBalanceCorrectionTransactions } from "../lib/metrics";
+import {
+  buildAccountBalances,
+  filterBalanceCorrectionTransactions,
+  isBalanceCorrectionTransaction
+} from "../lib/metrics";
+import { uploadRefundPhoto } from "../lib/refunds";
+import { supabase } from "../lib/supabaseClient";
 import type { Category, Currency, Transaction, TransactionType } from "../types";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -27,18 +35,27 @@ const emptyForm = {
   amount: "",
   currency: "EUR",
   date: today,
-  note: ""
+  note: "",
+  tags: ""
 };
 
 const correctionCategoryName = "Correzione Saldo";
+const refundCategoryName = "Rimborso";
 
 const normalizeKey = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
 
 const correctionKey = normalizeKey(correctionCategoryName);
+const refundKey = normalizeKey(refundCategoryName);
 
 const isCorrectionCategory = (category: Category) =>
   normalizeKey(category.name) === correctionKey;
+
+const parseTags = (raw: string) =>
+  raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 
 const Transactions = () => {
   const {
@@ -46,17 +63,30 @@ const Transactions = () => {
     categories,
     categoryBudgets,
     transactions,
+    refunds,
     settings,
     refresh,
     loading,
     error
   } = usePortfolioData();
+  const { session } = useAuth();
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [categorySearch, setCategorySearch] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
+  const [refundTarget, setRefundTarget] = useState<Transaction | null>(null);
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [refundMessage, setRefundMessage] = useState<string | null>(null);
+  const [refundSaving, setRefundSaving] = useState(false);
+  const [refundForm, setRefundForm] = useState({
+    amount: "",
+    account_id: "",
+    date: today,
+    note: "",
+    photo: null as File | null
+  });
 
   const currency = settings?.base_currency ?? "EUR";
   const activeMonthKey = (form.date || today).slice(0, 7);
@@ -71,6 +101,10 @@ const Transactions = () => {
     () => new Map(categories.map((category) => [category.id, category])),
     [categories]
   );
+  const categoryKeyById = useMemo(
+    () => new Map(categories.map((category) => [category.id, normalizeKey(category.name)])),
+    [categories]
+  );
   const accountMap = useMemo(
     () =>
       new Map(
@@ -81,6 +115,20 @@ const Transactions = () => {
       ),
     [accounts]
   );
+
+  const getRefundCategoryId = async () => {
+    const existing = categories.find(
+      (item) => item.type === "income" && normalizeKey(item.name) === refundKey
+    );
+    if (existing) return existing.id;
+    const { data, error } = await supabase
+      .from("categories")
+      .insert({ name: refundCategoryName, type: "income" })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id as string;
+  };
 
   const transferCategoryId = useMemo(() => {
     const match = categories.find((category) =>
@@ -115,6 +163,42 @@ const Transactions = () => {
     });
     return map;
   }, [categoryBudgets, activeMonthKey]);
+
+  const tagSuggestions = useMemo(() => {
+    const all = new Map<string, string>();
+    const byCategory = new Map<string, Map<string, string>>();
+    transactions.forEach((transaction) => {
+      const tags = transaction.tags ?? [];
+      if (tags.length === 0) return;
+      tags.forEach((tag) => {
+        const cleaned = tag.trim();
+        const key = normalizeKey(cleaned);
+        if (!key) return;
+        if (!all.has(key)) all.set(key, cleaned);
+        if (transaction.category_id) {
+          const bucket = byCategory.get(transaction.category_id) ?? new Map();
+          if (!bucket.has(key)) bucket.set(key, cleaned);
+          byCategory.set(transaction.category_id, bucket);
+        }
+      });
+    });
+    return {
+      all: Array.from(all.values()),
+      byCategory
+    };
+  }, [transactions]);
+
+  const refundsByTransaction = useMemo(() => {
+    const map = new Map<string, { amount: number; currency: Currency }>();
+    refunds.forEach((refund) => {
+      const current = map.get(refund.transaction_id);
+      map.set(refund.transaction_id, {
+        amount: (current?.amount ?? 0) + refund.refund_amount,
+        currency: current?.currency ?? refund.currency
+      });
+    });
+    return map;
+  }, [refunds]);
 
   const accountBalances = useMemo(
     () => buildAccountBalances(accounts, transactions),
@@ -274,6 +358,105 @@ const Transactions = () => {
     }
   };
 
+  const selectedTags = useMemo(() => parseTags(form.tags), [form.tags]);
+
+  const addTagToForm = (tag: string) => {
+    setForm((prev) => {
+      const existing = parseTags(prev.tags);
+      const lowerExisting = existing.map((value) => normalizeKey(value));
+      const tagKey = normalizeKey(tag);
+      if (!tagKey || lowerExisting.includes(tagKey)) {
+        return prev;
+      }
+      const nextTags = [...existing, tag];
+      return { ...prev, tags: nextTags.join(", ") };
+    });
+  };
+
+  const openRefundModal = (item: Transaction) => {
+    if (isBalanceCorrectionTransaction(item, categoryKeyById)) {
+      setMessage("Il rimborso non è disponibile per la Correzione Saldo.");
+      return;
+    }
+    setRefundTarget(item);
+    setRefundForm({
+      amount: String(item.amount),
+      account_id: item.account_id,
+      date: today,
+      note: "",
+      photo: null
+    });
+    setRefundMessage(null);
+    setRefundOpen(true);
+  };
+
+  const closeRefundModal = () => {
+    setRefundOpen(false);
+    setRefundTarget(null);
+    setRefundMessage(null);
+  };
+
+  const handleRefundSave = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!refundTarget || !session?.user) return;
+    setRefundMessage(null);
+    const amountValue = Number(refundForm.amount);
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      setRefundMessage("Inserisci un importo valido.");
+      return;
+    }
+    if (!refundForm.account_id) {
+      setRefundMessage("Seleziona il conto di accredito.");
+      return;
+    }
+    const account = accounts.find((item) => item.id === refundForm.account_id);
+    const refundCurrency = account?.currency ?? currency;
+    let photoPath: string | null = null;
+
+    setRefundSaving(true);
+    try {
+      if (refundForm.photo) {
+        const upload = await uploadRefundPhoto(session.user.id, refundForm.photo);
+        photoPath = upload.path;
+      }
+      const categoryId = await getRefundCategoryId();
+      const originalCategory =
+        categoryMap.get(refundTarget.category_id) ?? "Transazione";
+      const refundNote =
+        refundForm.note.trim() || `Rimborso: ${originalCategory}`;
+
+      await createRefund({
+        transaction_id: refundTarget.id,
+        account_id: refundForm.account_id,
+        refund_amount: amountValue,
+        currency: refundCurrency as Currency,
+        date: refundForm.date,
+        note: refundForm.note.trim() || null,
+        photo_path: photoPath
+      });
+
+      await createTransaction({
+        type: "income",
+        flow: "in",
+        account_id: refundForm.account_id,
+        category_id: categoryId,
+        amount: amountValue,
+        currency: refundCurrency as "EUR" | "USD",
+        date: refundForm.date,
+        note: refundNote,
+        tags: refundTarget.tags ?? null
+      });
+
+      await refresh();
+      setMessage("Rimborso registrato.");
+      closeRefundModal();
+    } catch (err) {
+      setRefundMessage((err as Error).message);
+    } finally {
+      setRefundSaving(false);
+    }
+  };
+
   useEffect(() => {
     if (accounts.length === 0) return;
     setForm((prev) => {
@@ -337,6 +520,7 @@ const Transactions = () => {
       }
     }
     const amountValue = Number(form.amount);
+    const parsedTags = parseTags(form.tags);
     if (!Number.isFinite(amountValue) || amountValue <= 0) {
       setMessage("Inserisci un importo valido.");
       return;
@@ -412,7 +596,8 @@ const Transactions = () => {
           amount: amountValue,
           currency: form.currency as "EUR" | "USD",
           date: form.date,
-          note: form.note || null
+          note: form.note || null,
+          tags: parsedTags.length > 0 ? parsedTags : null
         };
         if (editing) {
           await updateTransaction(editing.id, payload);
@@ -463,7 +648,8 @@ const Transactions = () => {
       amount: String(item.amount),
       currency: item.currency,
       date: item.date,
-      note: item.note ?? ""
+      note: item.note ?? "",
+      tags: item.tags ? item.tags.join(", ") : ""
     });
   };
 
@@ -736,6 +922,42 @@ const Transactions = () => {
             value={form.note}
             onChange={(event) => setForm({ ...form, note: event.target.value })}
           />
+          <input
+            className="input"
+            placeholder="Tag (separati da virgola)"
+            value={form.tags}
+            onChange={(event) => setForm({ ...form, tags: event.target.value })}
+          />
+          <div className="form-span tag-suggestions">
+            <span className="section-subtitle">
+              Tag salvati {selectedCategory ? "per categoria" : ""}
+            </span>
+            <div className="tag-suggestion-list">
+              {(selectedCategory
+                ? Array.from(
+                    tagSuggestions.byCategory.get(selectedCategory.id) ?? new Map()
+                  ).map(([, value]) => value)
+                : tagSuggestions.all
+              )
+                .filter((tag) => tag)
+                .map((tag) => {
+                  const isActive = selectedTags.some(
+                    (selected) => normalizeKey(selected) === normalizeKey(tag)
+                  );
+                  return (
+                    <button
+                      className={`tag tag-suggestion${isActive ? " active" : ""}`}
+                      type="button"
+                      key={`tag-${tag}`}
+                      onClick={() => addTagToForm(tag)}
+                      disabled={isActive}
+                    >
+                      #{tag}
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
           <div style={{ display: "flex", gap: "10px" }}>
             <button className="button" type="submit">
               {editing ? "Aggiorna" : "Aggiungi"}
@@ -827,6 +1049,114 @@ const Transactions = () => {
             </div>
           </div>
         )}
+        {refundOpen && refundTarget && (
+          <div className="modal-backdrop centered" onClick={closeRefundModal}>
+            <div
+              className="modal-card refund-modal"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="modal-header">
+                <div>
+                  <h3>Rimborso</h3>
+                  <p className="section-subtitle">Registra un rimborso legato alla transazione.</p>
+                </div>
+                <button
+                  className="button ghost small"
+                  type="button"
+                  onClick={closeRefundModal}
+                >
+                  Chiudi
+                </button>
+              </div>
+              <div className="info-panel refund-summary" style={{ marginBottom: "12px" }}>
+                <div className="info-item">
+                  <strong>Originale</strong>
+                  <span>
+                    {categoryMap.get(refundTarget.category_id) ?? "Categoria"} •{" "}
+                    {formatCurrencySafe(refundTarget.amount, refundTarget.currency)}
+                  </span>
+                  <span className="section-subtitle">
+                    {formatDate(refundTarget.date)} •{" "}
+                    {accountMap.get(refundTarget.account_id) ?? "Conto"}
+                  </span>
+                </div>
+              </div>
+              <form className="form-grid" onSubmit={handleRefundSave}>
+                <input
+                  className="input"
+                  type="number"
+                  step="0.01"
+                  placeholder="Rimborso (€)"
+                  value={refundForm.amount}
+                  onChange={(event) =>
+                    setRefundForm((prev) => ({ ...prev, amount: event.target.value }))
+                  }
+                  required
+                />
+                <select
+                  className="select"
+                  value={refundForm.account_id}
+                  onChange={(event) =>
+                    setRefundForm((prev) => ({
+                      ...prev,
+                      account_id: event.target.value
+                    }))
+                  }
+                  required
+                >
+                  <option value="">Conto accredito</option>
+                  {accounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.emoji ? `${account.emoji} ` : ""}
+                      {account.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  type="date"
+                  value={refundForm.date}
+                  onChange={(event) =>
+                    setRefundForm((prev) => ({ ...prev, date: event.target.value }))
+                  }
+                  required
+                />
+                <input
+                  className="input"
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) =>
+                    setRefundForm((prev) => ({
+                      ...prev,
+                      photo: event.target.files?.[0] ?? null
+                    }))
+                  }
+                />
+                <input
+                  className="input"
+                  placeholder="Note"
+                  value={refundForm.note}
+                  onChange={(event) =>
+                    setRefundForm((prev) => ({ ...prev, note: event.target.value }))
+                  }
+                />
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button className="button" type="submit" disabled={refundSaving}>
+                    {refundSaving ? "Salvataggio..." : "Salva rimborso"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={closeRefundModal}
+                  >
+                    Annulla
+                  </button>
+                </div>
+              </form>
+              {refundMessage && <div className="notice">{refundMessage}</div>}
+            </div>
+          </div>
+        )}
         {message && <div className="notice">{message}</div>}
         {error && <div className="error">{error}</div>}
         <div className="transaction-list">
@@ -842,6 +1172,8 @@ const Transactions = () => {
             recentTransactions.map((item) => {
               const category = categoryMap.get(item.category_id) ?? "Categoria";
               const account = accountMap.get(item.account_id) ?? "Conto";
+              const refundInfo = refundsByTransaction.get(item.id);
+              const isCorrection = isBalanceCorrectionTransaction(item, categoryKeyById);
               const isOut =
                 item.type === "expense" ||
                 (item.type === "investment" && item.flow === "out") ||
@@ -876,6 +1208,24 @@ const Transactions = () => {
                     >
                       {formatCurrency(amount, item.currency)}
                     </span>
+                    {refundInfo && (
+                      <span className="chip refund">
+                        {"\u2705"} Rimborsata{" "}
+                        {formatCurrencySafe(
+                          refundInfo.amount,
+                          refundInfo.currency ?? item.currency
+                        )}
+                      </span>
+                    )}
+                    {item.type === "expense" && !isCorrection && (
+                      <button
+                        className="button ghost small"
+                        type="button"
+                        onClick={() => openRefundModal(item)}
+                      >
+                        {"\u{1F4B8}"} Rimborso
+                      </button>
+                    )}
                   </div>
                 </div>
               );

@@ -244,7 +244,7 @@ const Analytics = () => {
                   const ratio = expenseTotal ? (item.value / expenseTotal) * 100 : 0;
                   return (
                     <div className="expense-bar" key={item.label}>
-                      <div>
+                      <div className="expense-meta">
                         <strong>{item.label}</strong>
                         <span className="section-subtitle">
                           {formatCurrencySafe(item.value, currency)}

@@ -6,6 +6,7 @@ import type {
   CategoryBudget,
   Goal,
   Holding,
+  Refund,
   Setting,
   Transaction
 } from "../types";
@@ -18,6 +19,12 @@ const handleError = (error: unknown) => {
 
 const toNumber = (value: unknown) =>
   value === null || value === undefined ? 0 : Number(value);
+
+const toTags = (value: unknown) => {
+  if (!Array.isArray(value)) return null;
+  const tags = value.filter((item) => typeof item === "string" && item.trim());
+  return tags.length > 0 ? tags : null;
+};
 
 const isMissingRelationError = (error: unknown) => {
   if (!error || typeof error !== "object") return false;
@@ -113,7 +120,8 @@ export const fetchTransactions = async (): Promise<Transaction[]> => {
   handleError(error);
   return (data ?? []).map((item) => ({
     ...item,
-    amount: toNumber(item.amount)
+    amount: toNumber(item.amount),
+    tags: toTags(item.tags)
   })) as Transaction[];
 };
 
@@ -148,6 +156,25 @@ export const deleteTransaction = async (id: string): Promise<void> => {
     .from("transactions")
     .delete()
     .eq("id", id);
+  handleError(error);
+};
+
+export const fetchRefunds = async (): Promise<Refund[]> => {
+  const { data, error } = await supabase
+    .from("refunds")
+    .select("*")
+    .order("date", { ascending: false });
+  handleError(error);
+  return (data ?? []).map((item) => ({
+    ...item,
+    refund_amount: toNumber(item.refund_amount)
+  })) as Refund[];
+};
+
+export const createRefund = async (
+  payload: Omit<Refund, "id" | "created_at" | "user_id">
+): Promise<void> => {
+  const { error } = await supabase.from("refunds").insert(payload);
   handleError(error);
 };
 

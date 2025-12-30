@@ -5,6 +5,7 @@ import type {
   CategoryBudget,
   Goal,
   Holding,
+  Refund,
   Setting,
   Transaction
 } from "../types";
@@ -13,6 +14,7 @@ import {
   fetchAccounts,
   fetchCategoryBudgets,
   fetchCategories,
+  fetchRefunds,
   fetchGoals,
   fetchHoldings,
   fetchSettings,
@@ -27,6 +29,7 @@ export const usePortfolioData = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [settings, setSettings] = useState<Setting | null>(null);
+  const [refunds, setRefunds] = useState<Refund[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const creatingEmergencyRef = useRef(false);
@@ -45,7 +48,8 @@ export const usePortfolioData = () => {
         nextTransactions,
         nextHoldings,
         nextSettings,
-        nextCategoryBudgets
+        nextCategoryBudgets,
+        nextRefunds
       ] = await Promise.all([
         fetchAccounts(),
         fetchCategories(),
@@ -53,7 +57,8 @@ export const usePortfolioData = () => {
         fetchTransactions(),
         fetchHoldings(),
         fetchSettings(),
-        fetchCategoryBudgets()
+        fetchCategoryBudgets(),
+        fetchRefunds()
       ]);
       let accountsToUse = nextAccounts;
       if (!hasEmergencyAccount(nextAccounts) && !creatingEmergencyRef.current) {
@@ -80,6 +85,7 @@ export const usePortfolioData = () => {
       setTransactions(nextTransactions);
       setHoldings(nextHoldings);
       setSettings(nextSettings);
+      setRefunds(nextRefunds);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -95,6 +101,7 @@ export const usePortfolioData = () => {
     accounts,
     categories,
     categoryBudgets,
+    refunds,
     goals,
     transactions,
     holdings,
