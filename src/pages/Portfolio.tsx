@@ -77,7 +77,6 @@ const Portfolio = () => {
   const [editing, setEditing] = useState<Holding | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [priceMessage, setPriceMessage] = useState<string | null>(null);
-  const [priceLoading] = useState<string | null>(null);
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketMessage, setMarketMessage] = useState<string | null>(null);
   const autoMarketAttemptedRef = useRef<Set<string>>(new Set());
@@ -632,22 +631,6 @@ const Portfolio = () => {
     } catch (err) {
       setMessage((err as Error).message);
     }
-  };
-
-  const handleLivePrice = async (item: Holding) => {
-    setPriceMessage(null);
-    if (item.asset_class === "Liquidita") {
-      setPriceMessage("Prezzo live non disponibile per liquidita.");
-      return;
-    }
-    const ticker = extractTicker(item.name);
-    if (!ticker) {
-      setPriceMessage(
-        "Inserisci il ticker nel nome (es. AAPL - ETF, BINANCE:BTCUSDT - Crypto)."
-      );
-      return;
-    }
-    setPriceMessage("Live disabilitato. Usa il bottone Aggiorna Markets.");
   };
 
   const runMarketUpdate = useCallback(
@@ -2510,14 +2493,6 @@ const Portfolio = () => {
                             </div>
                           </div>
                           <div className="asset-item-actions">
-                            <button
-                              className="button ghost small"
-                              type="button"
-                              onClick={() => handleLivePrice(item)}
-                              disabled={priceLoading === item.id}
-                            >
-                              {priceLoading === item.id ? "Live..." : "Live"}
-                            </button>
                             {item.asset_class !== "Liquidita" && (
                               <button
                                 className="button ghost small"
