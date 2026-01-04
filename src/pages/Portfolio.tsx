@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { usePortfolioData } from "../hooks/usePortfolioData";
@@ -17,12 +17,12 @@ import {
   formatCurrencySafe,
   formatPercentSafe
 } from "../lib/format";
-import { fetchGlobalQuote } from "../lib/market";
 import {
   buildAccountBalances,
   calculateMonthlyBurnRate,
   resolveEmergencyFundBalance
 } from "../lib/metrics";
+import { fetchMarketPrices } from "../lib/market";
 import type { Holding } from "../types";
 
 type AllocationTargetItem = {
@@ -77,7 +77,10 @@ const Portfolio = () => {
   const [editing, setEditing] = useState<Holding | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [priceMessage, setPriceMessage] = useState<string | null>(null);
-  const [priceLoading, setPriceLoading] = useState<string | null>(null);
+  const [priceLoading] = useState<string | null>(null);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketMessage, setMarketMessage] = useState<string | null>(null);
+  const autoMarketAttemptedRef = useRef<Set<string>>(new Set());
   const [allocationMessage, setAllocationMessage] = useState<string | null>(null);
   const [targetMessage, setTargetMessage] = useState<string | null>(null);
   const [targetDrafts, setTargetDrafts] = useState<Record<string, number>>({});
@@ -473,8 +476,8 @@ const Portfolio = () => {
   const extractTicker = (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return "";
-    const token = trimmed.split(/[^A-Za-z0-9.]/)[0] ?? "";
-    return token.toUpperCase();
+    const match = trimmed.match(/^[A-Za-z0-9:._-]+/);
+    return (match?.[0] ?? "").toUpperCase();
   };
 
   const formatHoldingLabel = (item: Holding) =>
@@ -639,22 +642,145 @@ const Portfolio = () => {
     }
     const ticker = extractTicker(item.name);
     if (!ticker) {
-      setPriceMessage("Inserisci il ticker nel nome (es. MWRD - ETF).");
+      setPriceMessage(
+        "Inserisci il ticker nel nome (es. AAPL - ETF, BINANCE:BTCUSDT - Crypto)."
+      );
       return;
     }
-    setPriceLoading(item.id);
-    try {
-      const price = await fetchGlobalQuote(ticker);
-      const currentValue = price * (item.quantity || 0);
-      await updateHolding(item.id, { current_value: currentValue });
-      await refresh();
-      setPriceMessage(`Prezzo ${ticker} aggiornato.`);
-    } catch (err) {
-      setPriceMessage((err as Error).message);
-    } finally {
-      setPriceLoading(null);
-    }
+    setPriceMessage("Live disabilitato. Usa il bottone Aggiorna Markets.");
   };
+
+  const runMarketUpdate = useCallback(
+    async (items: Holding[], notify = true) => {
+      if (marketLoading) return;
+      if (notify) setMarketMessage(null);
+      const activeHoldings = items.filter(
+        (item) =>
+          item.asset_class !== "Liquidita" &&
+          item.asset_class !== "Crypto" &&
+          Number(item.quantity) > 0
+      );
+      if (activeHoldings.length === 0) {
+        if (notify) setMarketMessage("Nessuna holding da aggiornare.");
+        return;
+      }
+
+      const tickerMap = new Map<string, Holding[]>();
+      const missingTickers: string[] = [];
+
+      activeHoldings.forEach((item) => {
+        const ticker = extractTicker(item.name);
+        if (!ticker) {
+          missingTickers.push(item.name);
+          return;
+        }
+        const key = ticker.toUpperCase();
+        const existing = tickerMap.get(key);
+        if (existing) {
+          existing.push(item);
+        } else {
+          tickerMap.set(key, [item]);
+        }
+      });
+
+      if (tickerMap.size === 0) {
+        if (notify) setMarketMessage("Nessun ticker valido trovato.");
+        return;
+      }
+
+      setMarketLoading(true);
+      try {
+        const results = await fetchMarketPrices(Array.from(tickerMap.keys()));
+        const priceByTicker = new Map<string, number>();
+        const scrapeErrors: string[] = [];
+
+        results.forEach((result) => {
+          const rawTicker = typeof result.ticker === "string" ? result.ticker : "";
+          const ticker = rawTicker.trim().toUpperCase();
+          if (!ticker) {
+            return;
+          }
+          const price = typeof result.price === "number" ? result.price : Number.NaN;
+          if (Number.isFinite(price)) {
+            priceByTicker.set(ticker, price);
+          } else if (result.error) {
+            scrapeErrors.push(`${ticker}: ${result.error}`);
+          }
+        });
+
+        let updatedCount = 0;
+        const updateErrors: string[] = [];
+
+        for (const [ticker, itemsForTicker] of tickerMap) {
+          const price = priceByTicker.get(ticker);
+          if (!price) {
+            updateErrors.push(`${ticker}: prezzo non trovato.`);
+            continue;
+          }
+          for (const item of itemsForTicker) {
+            const quantity = Number(item.quantity);
+            const currentValue = Number.isFinite(quantity) ? price * quantity : 0;
+            try {
+              await updateHolding(item.id, { current_value: currentValue });
+              updatedCount += 1;
+            } catch (err) {
+              updateErrors.push(`${ticker}: ${(err as Error).message}`);
+            }
+          }
+        }
+
+        if (updatedCount > 0) {
+          await refresh();
+        }
+
+        if (notify || scrapeErrors.length || updateErrors.length || missingTickers.length) {
+          const parts = [`Aggiornate ${updatedCount} holdings.`];
+          if (missingTickers.length) {
+            parts.push(`${missingTickers.length} senza ticker.`);
+          }
+          if (scrapeErrors.length) {
+            parts.push(`${scrapeErrors.length} errori scraping.`);
+          }
+          if (updateErrors.length) {
+            parts.push(`${updateErrors.length} errori update.`);
+          }
+          const detailErrors = [...scrapeErrors, ...updateErrors].slice(0, 3);
+          if (detailErrors.length) {
+            parts.push(`Dettagli: ${detailErrors.join(" | ")}`);
+          }
+          setMarketMessage(parts.join(" "));
+        }
+      } catch (err) {
+        if (notify) setMarketMessage((err as Error).message);
+      } finally {
+        setMarketLoading(false);
+      }
+    },
+    [fetchMarketPrices, marketLoading, refresh]
+  );
+
+  const handleMarketUpdate = async () => {
+    await runMarketUpdate(holdings, true);
+  };
+
+  useEffect(() => {
+    if (marketLoading) return;
+    const autoCandidates = holdings.filter((item) => {
+      if (item.asset_class === "Liquidita" || item.asset_class === "Crypto") {
+        return false;
+      }
+      if (!Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) {
+        return false;
+      }
+      return !Number.isFinite(item.current_value) || item.current_value <= 0;
+    });
+    const pending = autoCandidates.filter(
+      (item) => !autoMarketAttemptedRef.current.has(item.id)
+    );
+    if (pending.length === 0) return;
+    pending.forEach((item) => autoMarketAttemptedRef.current.add(item.id));
+    void runMarketUpdate(pending, false);
+  }, [holdings, marketLoading, runMarketUpdate]);
 
   const openTradeModal = (item: Holding, side: "buy" | "sell") => {
     setTradeHolding(item);
@@ -1464,7 +1590,16 @@ const Portfolio = () => {
           <h2 className="section-title">Portafoglio</h2>
           <p className="section-subtitle">Holdings, performance e metriche chiave</p>
         </div>
+        <button
+          className="button secondary"
+          type="button"
+          onClick={handleMarketUpdate}
+          disabled={marketLoading}
+        >
+          {marketLoading ? "Aggiorno..." : "Aggiorna Markets"}
+        </button>
       </div>
+      {marketMessage && <div className="notice">{marketMessage}</div>}
 
       <div className="card allocation-card">
         <div className="section-header">
@@ -2306,6 +2441,10 @@ const Portfolio = () => {
                       const itemRoi = item.total_cap
                         ? (item.current_value - item.total_cap) / item.total_cap
                         : Number.NaN;
+                      const unitPrice =
+                        item.current_value > 0 && item.quantity > 0
+                          ? item.current_value / item.quantity
+                          : Number.NaN;
                       const allocation = group.totalValue
                         ? item.current_value / group.totalValue
                         : 0;
@@ -2343,6 +2482,12 @@ const Portfolio = () => {
                               <span className="asset-item-label">Valore</span>
                               <strong className="asset-item-value">
                                 {formatCurrencySafe(item.current_value, item.currency)}
+                              </strong>
+                            </div>
+                            <div className="asset-item-metric">
+                              <span className="asset-item-label">Prezzo</span>
+                              <strong className="asset-item-value">
+                                {formatCurrencySafe(unitPrice, item.currency)}
                               </strong>
                             </div>
                             <div className="asset-item-metric">

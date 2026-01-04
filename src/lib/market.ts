@@ -1,60 +1,46 @@
-const API_KEY = import.meta.env.VITE_ALPHA_VANTAGE_KEY;
-const BASE_URL = "https://www.alphavantage.co/query";
-
-export const fetchGlobalQuote = async (symbol: string) => {
-  if (!API_KEY) {
-    throw new Error("API key Alpha Vantage mancante.");
-  }
-  const params = new URLSearchParams({
-    function: "GLOBAL_QUOTE",
-    symbol,
-    apikey: API_KEY
-  });
-  const response = await fetch(`${BASE_URL}?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error("Richiesta Alpha Vantage fallita.");
-  }
-  const data = (await response.json()) as Record<string, unknown>;
-  if (typeof data["Note"] === "string") {
-    throw new Error("Rate limit Alpha Vantage raggiunto. Riprova tra 1 minuto.");
-  }
-  if (typeof data["Error Message"] === "string") {
-    throw new Error("Ticker non valido su Alpha Vantage.");
-  }
-  const quote = data["Global Quote"] as Record<string, string> | undefined;
-  const priceRaw = quote?.["05. price"];
-  const price = priceRaw ? Number(priceRaw) : Number.NaN;
-  if (!Number.isFinite(price)) {
-    throw new Error("Prezzo non disponibile per questo ticker.");
-  }
-  return price;
+export type MarketPriceResult = {
+  ticker: string;
+  price?: number;
+  currency?: string;
+  name?: string;
+  category?: string;
+  found?: boolean;
+  error?: string;
+  source?: string;
 };
 
-export const fetchAssetOverview = async (symbol: string) => {
-  if (!API_KEY) {
-    throw new Error("API key Alpha Vantage mancante.");
+const MARKET_API_BASE =
+  import.meta.env.VITE_MARKET_API_URL?.trim() || "http://localhost:8000";
+const MARKET_API_URL = `${MARKET_API_BASE.replace(/\/$/, "")}/api/etf`;
+
+export const fetchMarketPrices = async (
+  tickers: string[]
+): Promise<MarketPriceResult[]> => {
+  const payload = tickers.map((ticker) => ticker.trim()).filter(Boolean);
+  if (payload.length === 0) {
+    return [];
   }
-  const params = new URLSearchParams({
-    function: "OVERVIEW",
-    symbol,
-    apikey: API_KEY
+  const response = await fetch(MARKET_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tickers: payload })
   });
-  const response = await fetch(`${BASE_URL}?${params.toString()}`);
   if (!response.ok) {
-    throw new Error("Richiesta Alpha Vantage fallita.");
+    let message = "Richiesta scraping fallita.";
+    try {
+      const errorPayload = (await response.json()) as { error?: string };
+      if (errorPayload?.error) message = errorPayload.error;
+    } catch {
+      // ignore error parsing
+    }
+    throw new Error(message);
   }
-  const data = (await response.json()) as Record<string, string>;
-  if (typeof data["Note"] === "string") {
-    throw new Error("Rate limit Alpha Vantage raggiunto. Riprova tra 1 minuto.");
+  const data = (await response.json()) as unknown;
+  if (Array.isArray(data)) {
+    return data as MarketPriceResult[];
   }
-  if (!data.Symbol) {
-    throw new Error("Info ticker non disponibili per questo asset.");
+  if (data && typeof data === "object") {
+    return [data as MarketPriceResult];
   }
-  return {
-    name: data.Name,
-    assetType: data.AssetType,
-    exchange: data.Exchange,
-    country: data.Country,
-    currency: data.Currency
-  };
+  throw new Error("Risposta scraping non valida.");
 };

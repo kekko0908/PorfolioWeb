@@ -2606,17 +2606,19 @@ label {
 .asset-item-metrics {
   flex: 1;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 12px;
   font-size: 13px;
   color: var(--muted);
+  overflow-x: auto;
 }
 
 .asset-item-metric {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 110px;
+  min-width: 96px;
+  flex: 0 0 auto;
 }
 
 .asset-item-label {
