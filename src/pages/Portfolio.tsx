@@ -1134,6 +1134,7 @@ const Portfolio = () => {
   const etfValue = holdingsByClass.get("ETF") ?? 0;
   const bondValue = holdingsByClass.get("Obbligazioni") ?? 0;
   const cryptoValue = holdingsByClass.get("Crypto") ?? 0;
+  const investmentHoldingsTotal = etfValue + bondValue + cryptoValue;
   const holdingsTotal = Array.from(holdingsByClass.values()).reduce((sum, value) => sum + value, 0);
   const allocationTotal = cashAvailable + emergencyFund + holdingsTotal;
   const targetTotal = allocationTotal > 0 ? allocationTotal : 0;
@@ -1629,11 +1630,7 @@ const Portfolio = () => {
                 <div className="allocation-summary">
                   <div>
                     <span className="stat-label">Totale attuale</span>
-                    <strong>{formatCurrencySafe(allocationTotal, currency)}</strong>
-                  </div>
-                  <div>
-                    <span className="stat-label">Fondo emergenza</span>
-                    <strong>{formatCurrencySafe(emergencyFund, currency)}</strong>
+                    <strong>{formatCurrencySafe(investmentHoldingsTotal, currency)}</strong>
                   </div>
                 </div>
               </>
@@ -2137,7 +2134,10 @@ const Portfolio = () => {
 
       {tradeHolding && (
         <div className="modal-backdrop" onClick={closeTradeModal}>
-          <div className="modal-card trade-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="modal-card modal-dark trade-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-header">
               <div>
                 <h3>
@@ -2441,7 +2441,6 @@ const Portfolio = () => {
                               item.avg_cost,
                               item.currency
                             )}`;
-                      const ticker = extractTicker(item.name);
                       return (
                         <div className="asset-item" key={item.id}>
                           <div className="asset-item-text">
@@ -2450,9 +2449,6 @@ const Portfolio = () => {
                               {item.name}
                             </strong>
                             <span className="section-subtitle">{subtitle}</span>
-                            {ticker && (
-                              <span className="asset-subinfo">Ticker: {ticker}</span>
-                            )}
                           </div>
                           <div className="asset-item-metrics">
                             <div className="asset-item-metric">
