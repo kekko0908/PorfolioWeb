@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { FormEvent } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
@@ -36,6 +36,37 @@ const emptyForm = {
   category_id: "",
   amount: "",
   currency: "EUR",
+  date: today,
+  note: "",
+  tags: ""
+};
+
+type MacroTemplate = {
+  id: string;
+  name: string;
+  type: TransactionType;
+  flow: "in" | "out";
+  account_id: string;
+  transfer_from_id: string;
+  transfer_to_id: string;
+  category_id: string;
+  amount: number;
+  currency: Currency;
+  date: string;
+  note: string | null;
+  tags: string[] | null;
+};
+
+const emptyMacroForm = {
+  name: "",
+  type: "expense" as TransactionType,
+  flow: "out" as "in" | "out",
+  account_id: "",
+  transfer_from_id: "",
+  transfer_to_id: "",
+  category_id: "",
+  amount: "",
+  currency: "EUR" as Currency,
   date: today,
   note: "",
   tags: ""
@@ -89,6 +120,12 @@ const Transactions = () => {
     note: "",
     photo: null as File | null
   });
+  const [macroOpen, setMacroOpen] = useState(false);
+  const [macroMessage, setMacroMessage] = useState<string | null>(null);
+  const [macroForm, setMacroForm] = useState(emptyMacroForm);
+  const [macros, setMacros] = useState<MacroTemplate[]>([]);
+  const [macroEditingId, setMacroEditingId] = useState<string | null>(null);
+  const [macroLoadError, setMacroLoadError] = useState<string | null>(null);
 
   const currency = settings?.base_currency ?? "EUR";
   const activeMonthKey = (form.date || today).slice(0, 7);
@@ -152,6 +189,17 @@ const Transactions = () => {
     [categories, form.type]
   );
 
+  const filteredMacroCategories = useMemo(
+    () =>
+      macroForm.type === "transfer"
+        ? []
+        : categories.filter(
+            (category) =>
+              category.type === macroForm.type && !isCorrectionCategory(category)
+          ),
+    [categories, macroForm.type]
+  );
+
   const budgetCapsByCategory = useMemo(() => {
     const map = new Map<string, number | null>();
     const matches = categoryBudgets.filter(
@@ -189,6 +237,49 @@ const Transactions = () => {
       byCategory
     };
   }, [transactions]);
+
+  const loadMacros = useCallback(async () => {
+    if (!session?.user) {
+      setMacros([]);
+      setMacroLoadError(null);
+      return;
+    }
+    setMacroLoadError(null);
+    const { data, error } = await supabase
+      .from("macro_templates")
+      .select(
+        "id, name, type, flow, account_id, transfer_from_id, transfer_to_id, category_id, amount, currency, note, tags"
+      )
+      .order("name", { ascending: true });
+    if (error) {
+      console.error("Errore caricamento macro.", error);
+      setMacroLoadError("Errore caricamento macro.");
+      setMacros([]);
+      return;
+    }
+    const normalized = (data ?? []).map((item) => ({
+      id: String(item.id),
+      name: String(item.name),
+      type: (item.type ?? "expense") as TransactionType,
+      flow: (item.flow ?? "out") as "in" | "out",
+      account_id: String(item.account_id ?? ""),
+      transfer_from_id: String(item.transfer_from_id ?? ""),
+      transfer_to_id: String(item.transfer_to_id ?? ""),
+      category_id: String(item.category_id ?? ""),
+      amount: Number(item.amount ?? 0),
+      currency: (item.currency ?? currency) as Currency,
+      date: today,
+      note: item.note ? String(item.note) : null,
+      tags: Array.isArray(item.tags)
+        ? item.tags.map((tag: string) => String(tag))
+        : null
+    }));
+    setMacros(normalized);
+  }, [session?.user, currency]);
+
+  useEffect(() => {
+    loadMacros();
+  }, [loadMacros]);
 
   const refundsByTransaction = useMemo(() => {
     const map = new Map<string, { amount: number; currency: Currency }>();
@@ -360,6 +451,32 @@ const Transactions = () => {
     }
   };
 
+  const resetMacroForm = useCallback(() => {
+    const defaultAccountId = accounts[0]?.id ?? "";
+    const defaultCurrency = accounts[0]?.currency ?? currency;
+    setMacroForm({
+      ...emptyMacroForm,
+      account_id: defaultAccountId,
+      transfer_from_id: defaultAccountId,
+      transfer_to_id: accounts[1]?.id ?? defaultAccountId,
+      currency: defaultCurrency,
+      date: today
+    });
+    setMacroEditingId(null);
+  }, [accounts, currency]);
+
+  const openMacroModal = () => {
+    resetMacroForm();
+    setMacroMessage(null);
+    setMacroOpen(true);
+  };
+
+  const closeMacroModal = () => {
+    setMacroOpen(false);
+    setMacroMessage(null);
+    setMacroEditingId(null);
+  };
+
   const selectedTags = useMemo(() => parseTags(form.tags), [form.tags]);
 
   const addTagToForm = (tag: string) => {
@@ -375,9 +492,231 @@ const Transactions = () => {
     });
   };
 
+  const macroSelectedTags = useMemo(() => parseTags(macroForm.tags), [macroForm.tags]);
+
+  const addTagToMacroForm = (tag: string) => {
+    setMacroForm((prev) => {
+      const existing = parseTags(prev.tags);
+      const lowerExisting = existing.map((value) => normalizeKey(value));
+      const tagKey = normalizeKey(tag);
+      if (!tagKey || lowerExisting.includes(tagKey)) {
+        return prev;
+      }
+      const nextTags = [...existing, tag];
+      return { ...prev, tags: nextTags.join(", ") };
+    });
+  };
+
+  const macroSelectedCategory = useMemo(
+    () => categories.find((category) => category.id === macroForm.category_id),
+    [categories, macroForm.category_id]
+  );
+
+  const applyMacroTemplate = useCallback(
+    (macro: MacroTemplate) => {
+      setEditing(null);
+      if (searchParams.get("edit")) {
+        setSearchParams({});
+      }
+      const flowDirection =
+        macro.type === "income" ? "in" : macro.type === "expense" ? "out" : macro.flow;
+      setForm({
+        type: macro.type,
+        flow: flowDirection,
+        account_id: macro.account_id,
+        transfer_from_id: macro.type === "transfer" ? macro.transfer_from_id : "",
+        transfer_to_id: macro.type === "transfer" ? macro.transfer_to_id : "",
+        category_id: macro.type === "transfer" ? "" : macro.category_id,
+        amount: String(macro.amount),
+        currency: macro.currency,
+        date: today,
+        note: macro.note ?? "",
+        tags: macro.tags ? macro.tags.join(", ") : ""
+      });
+    },
+    [searchParams, setSearchParams]
+  );
+
+  const startEditMacro = (macro: MacroTemplate) => {
+    setMacroEditingId(macro.id);
+    setMacroForm({
+      name: macro.name,
+      type: macro.type,
+      flow: macro.flow,
+      account_id: macro.account_id,
+      transfer_from_id: macro.transfer_from_id,
+      transfer_to_id: macro.transfer_to_id,
+      category_id: macro.category_id,
+      amount: String(macro.amount),
+      currency: macro.currency,
+      date: today,
+      note: macro.note ?? "",
+      tags: macro.tags ? macro.tags.join(", ") : ""
+    });
+    setMacroMessage(null);
+  };
+
+  const handleMacroSave = async (event: FormEvent) => {
+    event.preventDefault();
+    setMacroMessage(null);
+    if (!session?.user) {
+      setMacroMessage("Devi essere autenticato.");
+      return;
+    }
+    const trimmedName = macroForm.name.trim();
+    if (!trimmedName) {
+      setMacroMessage("Inserisci un nome macro.");
+      return;
+    }
+    const normalizedName = normalizeKey(trimmedName);
+    const existingWithName = macros.find(
+      (macro) => normalizeKey(macro.name) === normalizedName
+    );
+    if (existingWithName && existingWithName.id !== macroEditingId) {
+      setMacroMessage("Nome macro gia usato.");
+      return;
+    }
+    const amountValue = Number(macroForm.amount);
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      setMacroMessage("Inserisci un importo valido.");
+      return;
+    }
+    if (macroForm.type === "transfer") {
+      if (!macroForm.transfer_from_id || !macroForm.transfer_to_id) {
+        setMacroMessage("Seleziona i conti per il trasferimento.");
+        return;
+      }
+      if (macroForm.transfer_from_id === macroForm.transfer_to_id) {
+        setMacroMessage("Seleziona due conti diversi.");
+        return;
+      }
+    } else {
+      if (!macroForm.account_id) {
+        setMacroMessage("Seleziona un conto.");
+        return;
+      }
+      if (!macroForm.category_id) {
+        setMacroMessage("Seleziona una categoria.");
+        return;
+      }
+    }
+    const flowDirection =
+      macroForm.type === "income"
+        ? "in"
+        : macroForm.type === "expense"
+          ? "out"
+          : macroForm.flow;
+    const parsedTags = parseTags(macroForm.tags);
+    const payload = {
+      user_id: session.user.id,
+      name: trimmedName,
+      type: macroForm.type,
+      flow: flowDirection,
+      account_id: macroForm.type === "transfer" ? null : macroForm.account_id || null,
+      transfer_from_id:
+        macroForm.type === "transfer" ? macroForm.transfer_from_id || null : null,
+      transfer_to_id:
+        macroForm.type === "transfer" ? macroForm.transfer_to_id || null : null,
+      category_id: macroForm.type === "transfer" ? null : macroForm.category_id || null,
+      amount: amountValue,
+      currency: macroForm.currency,
+      note: macroForm.note.trim() || null,
+      tags: parsedTags.length > 0 ? parsedTags : null
+    };
+
+    if (macroEditingId) {
+      const { data, error } = await supabase
+        .from("macro_templates")
+        .update(payload)
+        .eq("id", macroEditingId)
+        .select(
+          "id, name, type, flow, account_id, transfer_from_id, transfer_to_id, category_id, amount, currency, note, tags"
+        )
+        .single();
+      if (error) {
+        setMacroMessage(error.message);
+        return;
+      }
+      const updatedMacro: MacroTemplate = {
+        id: String(data.id),
+        name: String(data.name),
+        type: (data.type ?? macroForm.type) as TransactionType,
+        flow: (data.flow ?? flowDirection) as "in" | "out",
+        account_id: String(data.account_id ?? ""),
+        transfer_from_id: String(data.transfer_from_id ?? ""),
+        transfer_to_id: String(data.transfer_to_id ?? ""),
+        category_id: String(data.category_id ?? ""),
+        amount: Number(data.amount ?? amountValue),
+        currency: (data.currency ?? macroForm.currency) as Currency,
+        date: today,
+        note: data.note ? String(data.note) : null,
+        tags: Array.isArray(data.tags)
+          ? data.tags.map((tag: string) => String(tag))
+          : null
+      };
+      setMacros((prev) =>
+        prev
+          .map((macro) => (macro.id === macroEditingId ? updatedMacro : macro))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setMacroMessage("Macro aggiornata.");
+      setMacroEditingId(null);
+    } else {
+      const { data, error } = await supabase
+        .from("macro_templates")
+        .insert(payload)
+        .select(
+          "id, name, type, flow, account_id, transfer_from_id, transfer_to_id, category_id, amount, currency, note, tags"
+        )
+        .single();
+      if (error) {
+        setMacroMessage(error.message);
+        return;
+      }
+      const savedMacro: MacroTemplate = {
+        id: String(data.id),
+        name: String(data.name),
+        type: (data.type ?? macroForm.type) as TransactionType,
+        flow: (data.flow ?? flowDirection) as "in" | "out",
+        account_id: String(data.account_id ?? ""),
+        transfer_from_id: String(data.transfer_from_id ?? ""),
+        transfer_to_id: String(data.transfer_to_id ?? ""),
+        category_id: String(data.category_id ?? ""),
+        amount: Number(data.amount ?? amountValue),
+        currency: (data.currency ?? macroForm.currency) as Currency,
+        date: today,
+        note: data.note ? String(data.note) : null,
+        tags: Array.isArray(data.tags)
+          ? data.tags.map((tag: string) => String(tag))
+          : null
+      };
+      setMacros((prev) =>
+        [...prev, savedMacro].sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setMacroMessage("Macro salvata.");
+    }
+    setMacroForm((prev) => ({ ...prev, name: "", amount: "", note: "", tags: "" }));
+  };
+
+  const handleMacroDelete = async (macroId: string) => {
+    if (!session?.user) {
+      setMacroMessage("Devi essere autenticato.");
+      return;
+    }
+    const { error } = await supabase.from("macro_templates").delete().eq("id", macroId);
+    if (error) {
+      setMacroMessage(error.message);
+      return;
+    }
+    setMacros((prev) => prev.filter((macro) => macro.id !== macroId));
+    if (macroEditingId === macroId) {
+      resetMacroForm();
+    }
+  };
+
   const openRefundModal = (item: Transaction) => {
     if (isBalanceCorrectionTransaction(item, categoryKeyById)) {
-      setMessage("Il rimborso non è disponibile per la Correzione Saldo.");
+      setMessage("Il rimborso non e disponibile per la Correzione Saldo.");
       return;
     }
     setRefundTarget(item);
@@ -422,10 +761,8 @@ const Transactions = () => {
         photoPath = upload.path;
       }
       const categoryId = await getRefundCategoryId();
-      const originalCategory =
-        categoryMap.get(refundTarget.category_id) ?? "Transazione";
-      const refundNote =
-        refundForm.note.trim() || `Rimborso: ${originalCategory}`;
+      const originalCategory = categoryMap.get(refundTarget.category_id) ?? "Transazione";
+      const refundNote = refundForm.note.trim() || `Rimborso: ${originalCategory}`;
 
       let refundTransactionId: string | null = null;
       try {
@@ -497,10 +834,43 @@ const Transactions = () => {
   }, [accounts, form.account_id, form.transfer_from_id, form.transfer_to_id, form.type]);
 
   useEffect(() => {
+    if (accounts.length === 0) return;
+    setMacroForm((prev) => {
+      if (prev.type === "transfer") {
+        const fromId = prev.transfer_from_id || accounts[0].id;
+        const toId = prev.transfer_to_id || accounts[1]?.id || accounts[0].id;
+        const fromAccount = accounts.find((item) => item.id === fromId) ?? accounts[0];
+        return {
+          ...prev,
+          transfer_from_id: fromId,
+          transfer_to_id: toId,
+          currency: fromAccount.currency
+        };
+      }
+      if (prev.account_id) return prev;
+      return {
+        ...prev,
+        account_id: accounts[0].id,
+        currency: accounts[0].currency
+      };
+    });
+  }, [
+    accounts,
+    macroForm.account_id,
+    macroForm.transfer_from_id,
+    macroForm.transfer_to_id,
+    macroForm.type
+  ]);
+
+  useEffect(() => {
     setForm((prev) => ({ ...prev, category_id: "" }));
     setCategoryOpen(false);
     setCategorySearch("");
   }, [form.type]);
+
+  useEffect(() => {
+    setMacroForm((prev) => ({ ...prev, category_id: "" }));
+  }, [macroForm.type]);
 
   useEffect(() => {
     const accountId = form.type === "transfer" ? form.transfer_from_id : form.account_id;
@@ -508,6 +878,14 @@ const Transactions = () => {
     if (!account) return;
     setForm((prev) => ({ ...prev, currency: account.currency }));
   }, [accounts, form.account_id, form.transfer_from_id, form.type]);
+
+  useEffect(() => {
+    const accountId =
+      macroForm.type === "transfer" ? macroForm.transfer_from_id : macroForm.account_id;
+    const account = accounts.find((item) => item.id === accountId);
+    if (!account) return;
+    setMacroForm((prev) => ({ ...prev, currency: account.currency }));
+  }, [accounts, macroForm.account_id, macroForm.transfer_from_id, macroForm.type]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -543,8 +921,7 @@ const Transactions = () => {
     }
 
     const resolveAvailableBalance = (accountId: string) => {
-      const balance =
-        accountBalances.find((item) => item.id === accountId)?.balance ?? 0;
+      const balance = accountBalances.find((item) => item.id === accountId)?.balance ?? 0;
       if (editing && editing.account_id === accountId) {
         const delta = editing.flow === "in" ? editing.amount : -editing.amount;
         return balance - delta;
@@ -658,8 +1035,7 @@ const Transactions = () => {
       account_id: item.account_id,
       transfer_from_id:
         item.type === "transfer" && item.flow === "out" ? item.account_id : "",
-      transfer_to_id:
-        item.type === "transfer" && item.flow === "in" ? item.account_id : "",
+      transfer_to_id: item.type === "transfer" && item.flow === "in" ? item.account_id : "",
       category_id: item.category_id,
       amount: String(item.amount),
       currency: item.currency,
@@ -676,6 +1052,39 @@ const Transactions = () => {
     if (!item) return;
     startEdit(item);
   }, [searchParams, transactions]);
+
+  const describeMacro = (macro: MacroTemplate) => {
+    const categoryLabel =
+      macro.type === "transfer"
+        ? "Trasferimento"
+        : categoryMap.get(macro.category_id) ?? "Categoria";
+    const accountLabel =
+      macro.type === "transfer"
+        ? `${accountMap.get(macro.transfer_from_id) ?? "Da"} -> ${
+            accountMap.get(macro.transfer_to_id) ?? "A"
+          }`
+        : accountMap.get(macro.account_id) ?? "Conto";
+    return {
+      categoryLabel,
+      accountLabel,
+      summary: `${categoryLabel} - ${formatCurrency(macro.amount, macro.currency)} - ${accountLabel}`
+    };
+  };
+
+  const renderSavedMacroButton = (macro: MacroTemplate) => {
+    const { summary } = describeMacro(macro);
+    return (
+      <button
+        className="macro-button"
+        key={`macro-${macro.id}`}
+        type="button"
+        onClick={() => applyMacroTemplate(macro)}
+      >
+        <span className="macro-main">{macro.name}</span>
+        <span className="macro-sub">{summary}</span>
+      </button>
+    );
+  };
 
   if (loading) {
     return <div className="card">Caricamento transazioni...</div>;
@@ -721,7 +1130,32 @@ const Transactions = () => {
             <h3>{editing ? "Modifica transazione" : "Nuova transazione"}</h3>
             <p className="section-subtitle">Registrazione rapida e pulita</p>
           </div>
-          <span className="pill">Workflow rapido</span>
+          <div className="section-actions">
+            <button
+              className="button secondary small"
+              type="button"
+              onClick={openMacroModal}
+            >
+              Gestisci Macro
+            </button>
+            <span className="pill">Workflow rapido</span>
+          </div>
+        </div>
+        <div className="macro-panel">
+          <div className="macro-group">
+            <span className="macro-title">Macro salvate</span>
+            {macroLoadError ? (
+              <div className="macro-empty">{macroLoadError}</div>
+            ) : macros.length === 0 ? (
+              <div className="macro-empty">Nessuna macro salvata.</div>
+            ) : (
+              <div
+                className={`macro-list${macros.length > 4 ? " macro-list-scroll" : ""}`}
+              >
+                {macros.map(renderSavedMacroButton)}
+              </div>
+            )}
+          </div>
         </div>
         <form className="form-grid transaction-form" onSubmit={handleSubmit}>
           <select
@@ -800,9 +1234,7 @@ const Transactions = () => {
                   <option value="out">Output capitale</option>
                   <option value="in">Ritorno / rendita</option>
                 </select>
-              ) : (
-                <span className="tag">Flusso automatico: entrata = IN, uscita = OUT</span>
-              )}
+              ) : null}
             </>
           )}
           {!isTransfer && (
@@ -1065,6 +1497,269 @@ const Transactions = () => {
             </div>
           </div>
         )}
+        {macroOpen && (
+          <div className="modal-backdrop macro-backdrop" onClick={closeMacroModal}>
+            <div
+              className="modal-card modal-dark macro-modal"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="modal-header">
+                <div>
+                  <h3>Gestisci Macro</h3>
+                  <p className="section-subtitle">
+                    Salva template riutilizzabili per le transazioni.
+                  </p>
+                </div>
+                <button
+                  className="button ghost small"
+                  type="button"
+                  onClick={closeMacroModal}
+                >
+                  Chiudi
+                </button>
+              </div>
+              {macroMessage && <div className="info-panel">{macroMessage}</div>}
+              <form className="form-grid" onSubmit={handleMacroSave}>
+                <input
+                  className="input form-span"
+                  placeholder="Nome macro (unico)"
+                  value={macroForm.name}
+                  onChange={(event) =>
+                    setMacroForm((prev) => ({ ...prev, name: event.target.value }))
+                  }
+                />
+                <select
+                  className="select"
+                  value={macroForm.type}
+                  onChange={(event) => {
+                    const nextType = event.target.value as TransactionType;
+                    setMacroForm((prev) => ({
+                      ...prev,
+                      type: nextType,
+                      flow:
+                        nextType === "income"
+                          ? "in"
+                          : nextType === "expense"
+                            ? "out"
+                            : prev.flow
+                    }));
+                  }}
+                >
+                  <option value="income">Entrata</option>
+                  <option value="expense">Uscita</option>
+                  <option value="transfer">Trasferimento</option>
+                  <option value="investment" hidden>
+                    Investimento
+                  </option>
+                </select>
+                {macroForm.type === "transfer" ? (
+                  <>
+                    <select
+                      className="select"
+                      value={macroForm.transfer_from_id}
+                      onChange={(event) =>
+                        setMacroForm((prev) => ({
+                          ...prev,
+                          transfer_from_id: event.target.value
+                        }))
+                      }
+                    >
+                      <option value="">Da (conto)</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.emoji ? `${account.emoji} ` : ""}
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="select"
+                      value={macroForm.transfer_to_id}
+                      onChange={(event) =>
+                        setMacroForm((prev) => ({
+                          ...prev,
+                          transfer_to_id: event.target.value
+                        }))
+                      }
+                    >
+                      <option value="">A (conto)</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.emoji ? `${account.emoji} ` : ""}
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                ) : (
+                  <>
+                    <select
+                      className="select"
+                      value={macroForm.account_id}
+                      onChange={(event) =>
+                        setMacroForm((prev) => ({
+                          ...prev,
+                          account_id: event.target.value
+                        }))
+                      }
+                    >
+                      <option value="">Seleziona conto</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.emoji ? `${account.emoji} ` : ""}
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                    {macroForm.type === "investment" && (
+                      <select
+                        className="select"
+                        value={macroForm.flow}
+                        onChange={(event) =>
+                          setMacroForm((prev) => ({
+                            ...prev,
+                            flow: event.target.value as "in" | "out"
+                          }))
+                        }
+                      >
+                        <option value="out">Output capitale</option>
+                        <option value="in">Ritorno / rendita</option>
+                      </select>
+                    )}
+                  </>
+                )}
+                {macroForm.type !== "transfer" && (
+                  <select
+                    className="select"
+                    value={macroForm.category_id}
+                    onChange={(event) =>
+                      setMacroForm((prev) => ({
+                        ...prev,
+                        category_id: event.target.value
+                      }))
+                    }
+                  >
+                    <option value="">Seleziona categoria</option>
+                    {filteredMacroCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <input
+                  className="input"
+                  type="number"
+                  step="0.01"
+                  placeholder={`Importo (${macroForm.currency})`}
+                  value={macroForm.amount}
+                  onChange={(event) =>
+                    setMacroForm((prev) => ({ ...prev, amount: event.target.value }))
+                  }
+                />
+                <input
+                  className="input"
+                  placeholder="Note"
+                  value={macroForm.note}
+                  onChange={(event) =>
+                    setMacroForm((prev) => ({ ...prev, note: event.target.value }))
+                  }
+                />
+                <input
+                  className="input"
+                  placeholder="Tag (separati da virgola)"
+                  value={macroForm.tags}
+                  onChange={(event) =>
+                    setMacroForm((prev) => ({ ...prev, tags: event.target.value }))
+                  }
+                />
+                <div className="form-span tag-suggestions">
+                  <span className="section-subtitle">
+                    Tag salvati {macroSelectedCategory ? "per categoria" : ""}
+                  </span>
+                  <div className="tag-suggestion-list">
+                    {(macroSelectedCategory
+                      ? Array.from(
+                          tagSuggestions.byCategory.get(macroSelectedCategory.id) ??
+                            new Map()
+                        ).map(([, value]) => value)
+                      : tagSuggestions.all
+                    )
+                      .filter((tag) => tag)
+                      .map((tag) => {
+                        const isActive = macroSelectedTags.some(
+                          (selected) => normalizeKey(selected) === normalizeKey(tag)
+                        );
+                        return (
+                          <button
+                            className={`tag tag-suggestion${isActive ? " active" : ""}`}
+                            type="button"
+                            key={`macro-tag-${tag}`}
+                            onClick={() => addTagToMacroForm(tag)}
+                            disabled={isActive}
+                          >
+                            #{tag}
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+                <div className="form-span" style={{ display: "flex", gap: "10px" }}>
+                  <button className="button" type="submit">
+                    {macroEditingId ? "Aggiorna macro" : "Salva macro"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={resetMacroForm}
+                  >
+                    {macroEditingId ? "Annulla modifica" : "Reset"}
+                  </button>
+                </div>
+              </form>
+              <div className="macro-manage-list">
+                {macros.length === 0 ? (
+                  <div className="macro-empty">Nessuna macro salvata.</div>
+                ) : (
+                  macros.map((macro) => {
+                    const { summary } = describeMacro(macro);
+                    return (
+                      <div className="macro-manage-item" key={`macro-manage-${macro.id}`}>
+                        <div className="macro-manage-text">
+                          <span className="macro-manage-name">{macro.name}</span>
+                          <span className="macro-manage-sub">{summary}</span>
+                        </div>
+                        <div className="macro-manage-actions">
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() => applyMacroTemplate(macro)}
+                          >
+                            Usa
+                          </button>
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() => startEditMacro(macro)}
+                          >
+                            Modifica
+                          </button>
+                          <button
+                            className="button ghost small"
+                            type="button"
+                            onClick={() => handleMacroDelete(macro.id)}
+                          >
+                            Elimina
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         {refundOpen && refundTarget && (
           <div className="modal-backdrop centered" onClick={closeRefundModal}>
             <div
@@ -1088,11 +1783,11 @@ const Transactions = () => {
                 <div className="info-item">
                   <strong>Originale</strong>
                   <span>
-                    {categoryMap.get(refundTarget.category_id) ?? "Categoria"} •{" "}
+                    {categoryMap.get(refundTarget.category_id) ?? "Categoria"} â€¢{" "}
                     {formatCurrencySafe(refundTarget.amount, refundTarget.currency)}
                   </span>
                   <span className="section-subtitle">
-                    {formatDate(refundTarget.date)} •{" "}
+                    {formatDate(refundTarget.date)} â€¢{" "}
                     {accountMap.get(refundTarget.account_id) ?? "Conto"}
                   </span>
                 </div>
@@ -1102,7 +1797,7 @@ const Transactions = () => {
                   className="input"
                   type="number"
                   step="0.01"
-                  placeholder="Rimborso (€)"
+                  placeholder="Rimborso (â‚¬)"
                   value={refundForm.amount}
                   onChange={(event) =>
                     setRefundForm((prev) => ({ ...prev, amount: event.target.value }))
@@ -1261,3 +1956,5 @@ const Transactions = () => {
 };
 
 export default Transactions;
+
+

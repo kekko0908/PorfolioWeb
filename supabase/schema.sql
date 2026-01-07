@@ -42,6 +42,25 @@ create table if not exists public.transactions (
   created_at timestamptz not null default now()
 );
 
+-- Macro templates
+create table if not exists public.macro_templates (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users on delete cascade default auth.uid(),
+  name text not null,
+  type text not null check (type in ('income', 'expense', 'investment', 'transfer')),
+  flow text not null check (flow in ('in', 'out')),
+  account_id uuid references public.accounts on delete set null,
+  transfer_from_id uuid references public.accounts on delete set null,
+  transfer_to_id uuid references public.accounts on delete set null,
+  category_id uuid references public.categories on delete set null,
+  amount numeric(14, 2) not null,
+  currency text not null check (currency in ('EUR', 'USD')),
+  note text,
+  tags text[],
+  created_at timestamptz not null default now(),
+  unique (user_id, name)
+);
+
 -- Refunds
 create table if not exists public.refunds (
   id uuid primary key default gen_random_uuid(),
@@ -161,6 +180,7 @@ execute procedure public.set_updated_at();
 alter table public.categories enable row level security;
 alter table public.accounts enable row level security;
 alter table public.transactions enable row level security;
+alter table public.macro_templates enable row level security;
 alter table public.refunds enable row level security;
 alter table public.holdings enable row level security;
 alter table public.goals enable row level security;
@@ -202,6 +222,15 @@ create policy "Transactions insert" on public.transactions
 create policy "Transactions update" on public.transactions
   for update using (auth.uid() = user_id);
 create policy "Transactions delete" on public.transactions
+  for delete using (auth.uid() = user_id);
+
+create policy "Macro templates select" on public.macro_templates
+  for select using (auth.uid() = user_id);
+create policy "Macro templates insert" on public.macro_templates
+  for insert with check (auth.uid() = user_id);
+create policy "Macro templates update" on public.macro_templates
+  for update using (auth.uid() = user_id);
+create policy "Macro templates delete" on public.macro_templates
   for delete using (auth.uid() = user_id);
 
 create policy "Refunds select" on public.refunds
