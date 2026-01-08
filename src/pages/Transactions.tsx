@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { FormEvent } from "react";
 import { usePortfolioData } from "../hooks/usePortfolioData";
@@ -126,6 +126,8 @@ const Transactions = () => {
   const [macros, setMacros] = useState<MacroTemplate[]>([]);
   const [macroEditingId, setMacroEditingId] = useState<string | null>(null);
   const [macroLoadError, setMacroLoadError] = useState<string | null>(null);
+  const skipFormCategoryReset = useRef(false);
+  const skipMacroCategoryReset = useRef(false);
 
   const currency = settings?.base_currency ?? "EUR";
   const activeMonthKey = (form.date || today).slice(0, 7);
@@ -518,6 +520,7 @@ const Transactions = () => {
       if (searchParams.get("edit")) {
         setSearchParams({});
       }
+      skipFormCategoryReset.current = true;
       const flowDirection =
         macro.type === "income" ? "in" : macro.type === "expense" ? "out" : macro.flow;
       setForm({
@@ -538,6 +541,7 @@ const Transactions = () => {
   );
 
   const startEditMacro = (macro: MacroTemplate) => {
+    skipMacroCategoryReset.current = true;
     setMacroEditingId(macro.id);
     setMacroForm({
       name: macro.name,
@@ -863,12 +867,22 @@ const Transactions = () => {
   ]);
 
   useEffect(() => {
+    if (skipFormCategoryReset.current) {
+      skipFormCategoryReset.current = false;
+      setCategoryOpen(false);
+      setCategorySearch("");
+      return;
+    }
     setForm((prev) => ({ ...prev, category_id: "" }));
     setCategoryOpen(false);
     setCategorySearch("");
   }, [form.type]);
 
   useEffect(() => {
+    if (skipMacroCategoryReset.current) {
+      skipMacroCategoryReset.current = false;
+      return;
+    }
     setMacroForm((prev) => ({ ...prev, category_id: "" }));
   }, [macroForm.type]);
 
@@ -1028,6 +1042,7 @@ const Transactions = () => {
   };
 
   const startEdit = (item: Transaction) => {
+    skipFormCategoryReset.current = true;
     setEditing(item);
     setForm({
       type: item.type,
@@ -1956,5 +1971,6 @@ const Transactions = () => {
 };
 
 export default Transactions;
+
 
 
