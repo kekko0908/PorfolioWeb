@@ -10,6 +10,7 @@ type Scenario = {
   benchmarkShock: number;
   shocks: Record<string, number>;
   advice: string[];
+  shape: "slow-bleed" | "shock" | "slump";
 };
 
 const scenarios: Scenario[] = [
@@ -33,7 +34,8 @@ const scenarios: Scenario[] = [
       "Aumenta exposure a oro/commodity difensive.",
       "Valuta ETF inflation-linked o indicizzati.",
       "Riduci duration obbligazionaria."
-    ]
+    ],
+    shape: "slow-bleed"
   },
   {
     id: "rate-hike",
@@ -55,7 +57,8 @@ const scenarios: Scenario[] = [
       "Favorisci cash e strumenti a breve durata.",
       "Ribilancia verso quality e low leverage.",
       "Riduci asset ad alta volatilita."
-    ]
+    ],
+    shape: "shock"
   },
   {
     id: "global-slowdown",
@@ -77,18 +80,73 @@ const scenarios: Scenario[] = [
       "Proteggi equity con asset decorrelati.",
       "Mantieni liquidita per opportunita.",
       "Diversifica esposizione geografica."
-    ]
+    ],
+    shape: "slump"
   }
 ];
 
-const buildWave = (labelCount: number) => {
-  const points: number[] = [];
-  for (let i = 0; i < labelCount; i += 1) {
-    const t = i / (labelCount - 1 || 1);
-    const wave = Math.sin(Math.PI * t);
-    points.push(wave);
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
+const lerp = (start: number, end: number, t: number) => start + (end - start) * t;
+
+const hashString = (value: string) => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) % 2147483647;
   }
-  return points;
+  return Math.abs(hash);
+};
+
+const createRng = (seed: number) => {
+  let t = seed || 1;
+  return () => {
+    t += 0x6d2b79f5;
+    let result = Math.imul(t ^ (t >>> 15), 1 | t);
+    result ^= result + Math.imul(result ^ (result >>> 7), 61 | result);
+    return ((result ^ (result >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const buildNoise = (seed: number, steps: number) => {
+  const rng = createRng(seed);
+  return Array.from({ length: steps }, () => rng() * 2 - 1);
+};
+
+const buildStressCurve = (steps: number, shape: Scenario["shape"]) => {
+  const curve: number[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    const t = i / (steps - 1 || 1);
+    let value = 0;
+    if (shape === "shock") {
+      if (t <= 0.25) {
+        value = lerp(0, 1, t / 0.25);
+      } else if (t <= 0.7) {
+        value = lerp(1, 0.55, (t - 0.25) / 0.45);
+      } else {
+        value = lerp(0.55, 0.45, (t - 0.7) / 0.3);
+      }
+      if (t >= 0.5 && t <= 0.65) {
+        value += 0.08 * Math.sin(((t - 0.5) / 0.15) * Math.PI);
+      }
+    } else if (shape === "slump") {
+      if (t <= 0.4) {
+        value = lerp(0, 1, t / 0.4);
+      } else if (t <= 0.8) {
+        value = lerp(1, 0.9, (t - 0.4) / 0.4);
+      } else {
+        value = lerp(0.9, 0.8, (t - 0.8) / 0.2);
+      }
+    } else {
+      if (t <= 0.7) {
+        value = lerp(0, 1, t / 0.7);
+      } else {
+        value = lerp(1, 0.7, (t - 0.7) / 0.3);
+      }
+    }
+    curve.push(clamp(value, 0, 1.1));
+  }
+  return curve;
 };
 
 const StressTest = () => {
@@ -114,9 +172,30 @@ const StressTest = () => {
     return weights;
   }, [allocationBase, cashTotal, portfolioTotal]);
 
+  const portfolioVolatility = useMemo(() => {
+    const volatilityByClass: Record<string, number> = {
+      Cash: 0.02,
+      ETF: 0.12,
+      Azioni: 0.2,
+      Obbligazioni: 0.08,
+      Crypto: 0.4,
+      Oro: 0.1,
+      "Real Estate": 0.18,
+      "Private Equity": 0.22,
+      Altro: 0.14
+    };
+    return Array.from(allocationWeights.entries()).reduce((sum, [label, weight]) => {
+      const volatility = volatilityByClass[label] ?? 0.14;
+      return sum + weight * volatility;
+    }, 0.12);
+  }, [allocationWeights]);
+
   const stressSeries = useMemo(() => {
-    const labels = Array.from({ length: 12 }, (_, index) => `M${index + 1}`);
-    const wave = buildWave(labels.length);
+    const labels = Array.from({ length: 12 }, (_, index) => {
+      const date = new Date();
+      date.setMonth(date.getMonth() + index);
+      return new Intl.DateTimeFormat("it-IT", { month: "short" }).format(date);
+    });
     return scenarios.map((scenario) => {
       const portfolioShock = Array.from(allocationWeights.entries()).reduce(
         (sum, [label, weight]) => {
@@ -126,18 +205,41 @@ const StressTest = () => {
         },
         0
       );
-      const data = labels.map((label, index) => ({
-        label,
-        benchmark: scenario.benchmarkShock * wave[index],
-        portfolio: portfolioShock * wave[index]
-      }));
+      const seedInput = Array.from(allocationWeights.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([label, weight]) => `${label}:${weight.toFixed(3)}`)
+        .join("|");
+      const seed = hashString(`${scenario.id}|${seedInput}`);
+      const curve = buildStressCurve(labels.length, scenario.shape);
+      const benchmarkNoise = buildNoise(seed + 11, labels.length);
+      const portfolioNoise = buildNoise(seed + 29, labels.length);
+      const benchmarkWiggle = 0.04;
+      const portfolioWiggle = clamp(0.06 + portfolioVolatility * 0.35, 0.08, 0.2);
+      const data = labels.map((label, index) => {
+        const base = curve[index];
+        const benchmarkFactor = clamp(
+          base * (1 + benchmarkNoise[index] * benchmarkWiggle),
+          0,
+          1.15
+        );
+        const portfolioFactor = clamp(
+          base * (1 + portfolioNoise[index] * portfolioWiggle),
+          0,
+          1.2
+        );
+        return {
+          label,
+          benchmark: scenario.benchmarkShock * benchmarkFactor,
+          portfolio: portfolioShock * portfolioFactor
+        };
+      });
       return {
         scenario,
         portfolioShock,
         data
       };
     });
-  }, [allocationWeights]);
+  }, [allocationWeights, portfolioVolatility]);
 
   if (loading) {
     return <div className="card">Caricamento stress test...</div>;

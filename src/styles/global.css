@@ -2132,6 +2132,10 @@ label {
   gap: 8px;
 }
 
+.calendar-actions .calendar-year-row {
+  margin-bottom: 0;
+}
+
 .calendar-actions .input {
   min-width: 150px;
 }

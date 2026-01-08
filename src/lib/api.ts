@@ -405,7 +405,7 @@ export const upsertCategoryBudgets = async (
 ): Promise<void> => {
   if (payloads.length === 0) return;
   const { error } = await supabase.from("category_budgets").upsert(payloads, {
-    onConflict: "user_id,category_id"
+    onConflict: "user_id,category_id,period_key"
   });
   handleError(error);
 };

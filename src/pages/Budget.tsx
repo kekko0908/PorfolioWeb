@@ -105,6 +105,19 @@ const Budget = () => {
     []
   );
 
+  const getPreviousMonthKey = (value: string) => {
+    const parts = value.split("-");
+    if (parts.length !== 2) return value;
+    const year = Number(parts[0]);
+    const month = Number(parts[1]) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return value;
+    const prevDate = new Date(year, month - 1, 1);
+    return `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(
+      2,
+      "0"
+    )}`;
+  };
+
   const expenseCategories = useMemo(
     () =>
       categories.filter(
@@ -143,6 +156,11 @@ const Budget = () => {
       (budget) => budget.period_key === monthKey
     );
     if (matches.length > 0) return matches;
+    const previousKey = getPreviousMonthKey(monthKey);
+    const previousBudgets = categoryBudgets.filter(
+      (budget) => budget.period_key === previousKey
+    );
+    if (previousBudgets.length > 0) return previousBudgets;
     return categoryBudgets.filter((budget) => !budget.period_key);
   }, [categoryBudgets, monthKey]);
 
@@ -252,18 +270,6 @@ const Budget = () => {
     return map;
   }, [parentCategories, colorDrafts, colorById, defaultColorById, categoryIcons]);
 
-  const getPreviousMonthKey = (value: string) => {
-    const parts = value.split("-");
-    if (parts.length !== 2) return value;
-    const year = Number(parts[0]);
-    const month = Number(parts[1]) - 1;
-    if (!Number.isFinite(year) || !Number.isFinite(month)) return value;
-    const prevDate = new Date(year, month - 1, 1);
-    return `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(
-      2,
-      "0"
-    )}`;
-  };
 
   const totalExpense = useMemo(() => {
     return parentCategories.reduce(

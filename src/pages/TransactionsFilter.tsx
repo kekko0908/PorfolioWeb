@@ -72,6 +72,8 @@ const TransactionsFilter = () => {
   const [calendarYear, setCalendarYear] = useState(
     () => String(new Date().getFullYear())
   );
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear());
 
   const currency = settings?.base_currency ?? "EUR";
 
@@ -160,6 +162,16 @@ const TransactionsFilter = () => {
       monthLabel
     };
   }, [calendarMonth]);
+
+  const monthLabels = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, index) =>
+        new Intl.DateTimeFormat("it-IT", { month: "short" }).format(
+          new Date(2020, index, 1)
+        )
+      ),
+    []
+  );
 
   const weekMeta = useMemo(() => {
     const weekStart = getWeekStart(calendarWeek);
@@ -272,6 +284,11 @@ const TransactionsFilter = () => {
     setFilterCategory("all");
   }, [filterType]);
 
+  useEffect(() => {
+    if (!monthPickerOpen) return;
+    setPickerYear(monthMeta.year);
+  }, [monthPickerOpen, monthMeta.year]);
+
   const shiftCalendar = (delta: number) => {
     if (calendarView === "month") {
       const date = new Date(monthMeta.year, monthMeta.monthIndex + delta, 1);
@@ -288,6 +305,12 @@ const TransactionsFilter = () => {
     }
     const nextYear = yearMeta.year + delta;
     setCalendarYear(String(nextYear));
+  };
+
+  const selectMonth = (year: number, index: number) => {
+    const nextKey = `${year}-${String(index + 1).padStart(2, "0")}`;
+    setCalendarMonth(nextKey);
+    setMonthPickerOpen(false);
   };
 
   const resetFilters = () => {
@@ -345,7 +368,17 @@ const TransactionsFilter = () => {
               {"<"}
             </button>
             <div className="calendar-title">
-              <strong>{calendarLabel}</strong>
+              {calendarView === "month" ? (
+                <button
+                  className="budget-month-label"
+                  type="button"
+                  onClick={() => setMonthPickerOpen(true)}
+                >
+                  {calendarLabel}
+                </button>
+              ) : (
+                <strong>{calendarLabel}</strong>
+              )}
               <div className="calendar-summary">
                 <span className="calendar-income">
                   +{formatCurrency(calendarSummary.income, currency)}
@@ -374,14 +407,6 @@ const TransactionsFilter = () => {
                   </button>
                 ))}
               </div>
-              {calendarView === "month" && (
-                <input
-                  className="input"
-                  type="month"
-                  value={calendarMonth}
-                  onChange={(event) => setCalendarMonth(event.target.value)}
-                />
-              )}
               {calendarView === "week" && (
                 <input
                   className="input"
@@ -391,14 +416,23 @@ const TransactionsFilter = () => {
                 />
               )}
               {calendarView === "year" && (
-                <input
-                  className="input"
-                  type="number"
-                  min="2000"
-                  max="2100"
-                  value={calendarYear}
-                  onChange={(event) => setCalendarYear(event.target.value)}
-                />
+                <div className="budget-year-row calendar-year-row">
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setCalendarYear(String(yearMeta.year - 1))}
+                  >
+                    {"<"}
+                  </button>
+                  <span className="budget-year-label">{yearMeta.year}</span>
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => setCalendarYear(String(yearMeta.year + 1))}
+                  >
+                    {">"}
+                  </button>
+                </div>
               )}
               <button
                 className="button ghost small"
@@ -598,6 +632,61 @@ const TransactionsFilter = () => {
           )}
         </div>
       </div>
+      {monthPickerOpen && (
+        <div className="modal-backdrop" onClick={() => setMonthPickerOpen(false)}>
+          <div
+            className="modal-card budget-month-picker"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <h3>Seleziona mese</h3>
+                <p className="section-subtitle">Scegli mese e anno rapidamente.</p>
+              </div>
+              <button
+                className="button ghost small"
+                type="button"
+                onClick={() => setMonthPickerOpen(false)}
+              >
+                Chiudi
+              </button>
+            </div>
+            <div className="budget-year-row">
+              <button
+                className="button ghost small"
+                type="button"
+                onClick={() => setPickerYear((prev) => prev - 1)}
+              >
+                {"<"}
+              </button>
+              <span className="budget-year-label">{pickerYear}</span>
+              <button
+                className="button ghost small"
+                type="button"
+                onClick={() => setPickerYear((prev) => prev + 1)}
+              >
+                {">"}
+              </button>
+            </div>
+            <div className="budget-month-grid">
+              {monthLabels.map((label, index) => {
+                const key = `${pickerYear}-${String(index + 1).padStart(2, "0")}`;
+                const isActive = key === calendarMonth;
+                return (
+                  <button
+                    className={`budget-month-item${isActive ? " active" : ""}`}
+                    type="button"
+                    key={key}
+                    onClick={() => selectMonth(pickerYear, index)}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
